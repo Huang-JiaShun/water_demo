@@ -12,9 +12,13 @@ config_version=5
 
 config/name="Compute Texture"
 config/tags=PackedStringArray("3d", "demo", "official", "rendering")
-run/main_scene="res://main.tscn"
+run/main_scene="res://water/demo/aquarium_demo.tscn"
 config/features=PackedStringArray("4.7")
 config/icon="res://icon.svg"
+
+[autoload]
+
+_mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 
 [debug]
 
@@ -24,3 +28,42 @@ gdscript/warnings/untyped_declaration=1
 
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg")
+
+[shader_globals]
+
+water_wave_tex={
+"type": "sampler2D",
+"value": ""
+}
+water_world_to_tank={
+"type": "mat4",
+"value": Projection(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+}
+water_tank_size={
+"type": "vec3",
+"value": Vector3(1.2, 0.5, 0.45)
+}
+water_surface_height={
+"type": "float",
+"value": 0.42
+}
+water_sigma_a={
+"type": "vec3",
+"value": Vector3(0.45, 0.07, 0.03)
+}
+water_sigma_s={
+"type": "vec3",
+"value": Vector3(0.04, 0.05, 0.06)
+}
+water_phase_g={
+"type": "float",
+"value": 0.85
+}
+water_ior={
+"type": "float",
+"value": 1.333
+}

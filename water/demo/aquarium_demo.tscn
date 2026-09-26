@@ -1,0 +1,178 @@
+[gd_scene load_steps=24 format=3]
+
+[ext_resource type="Script" path="res://water/core/water_body.gd" id="1_body"]
+[ext_resource type="Script" path="res://water/demo/water_disturber.gd" id="2_dist"]
+[ext_resource type="Shader" path="res://water/surface/water_surface.gdshader" id="3_surf"]
+[ext_resource type="Texture2D" path="res://assets/polyhaven/industrial_sunset_puresky_2k.hdr" id="4_sky"]
+[ext_resource type="Script" path="res://water/demo/demo_cameras.gd" id="5_cams"]
+
+[sub_resource type="PanoramaSkyMaterial" id="SkyMat"]
+panorama = ExtResource("4_sky")
+
+[sub_resource type="Sky" id="Sky"]
+sky_material = SubResource("SkyMat")
+
+[sub_resource type="Environment" id="Env"]
+background_mode = 2
+sky = SubResource("Sky")
+ambient_light_source = 3
+ambient_light_sky_contribution = 0.35
+ambient_light_energy = 0.5
+reflected_light_source = 2
+tonemap_mode = 4
+
+[sub_resource type="PlaneMesh" id="SurfaceMesh"]
+size = Vector2(1.2, 0.45)
+subdivide_width = 255
+subdivide_depth = 95
+
+[sub_resource type="FastNoiseLite" id="DetailNoise"]
+frequency = 0.02
+
+[sub_resource type="NoiseTexture2D" id="DetailNormal"]
+width = 256
+height = 256
+seamless = true
+as_normal_map = true
+bump_strength = 4.0
+noise = SubResource("DetailNoise")
+
+[sub_resource type="ShaderMaterial" id="SurfaceMat"]
+render_priority = 0
+shader = ExtResource("3_surf")
+shader_parameter/height_scale = 3.0
+shader_parameter/detail_normal = SubResource("DetailNormal")
+shader_parameter/detail_strength = 0.12
+shader_parameter/detail_scale_a = 2.5
+shader_parameter/detail_scale_b = 6.0
+shader_parameter/detail_speed_a = Vector2(0.02, 0.012)
+shader_parameter/detail_speed_b = Vector2(-0.017, 0.026)
+shader_parameter/roughness = 0.03
+shader_parameter/refraction_scale = 1.0
+shader_parameter/max_refraction_distance = 0.5
+shader_parameter/high_quality_refraction = false
+shader_parameter/march_steps = 8
+shader_parameter/march_thickness = 0.05
+
+[sub_resource type="BoxMesh" id="FloorMesh"]
+size = Vector3(1.2, 0.02, 0.45)
+
+[sub_resource type="StandardMaterial3D" id="SandMat"]
+albedo_color = Color(0.76, 0.68, 0.52, 1)
+roughness = 0.95
+
+[sub_resource type="StandardMaterial3D" id="RockMat"]
+albedo_color = Color(0.35, 0.33, 0.3, 1)
+roughness = 0.85
+
+[sub_resource type="BoxMesh" id="RockMesh"]
+size = Vector3(0.14, 0.6, 0.1)
+
+[sub_resource type="BoxShape3D" id="RockShape"]
+size = Vector3(0.14, 0.6, 0.1)
+
+[sub_resource type="BoxMesh" id="StoneMesh"]
+size = Vector3(0.08, 0.08, 0.08)
+
+[sub_resource type="StandardMaterial3D" id="StoneMat"]
+albedo_color = Color(0.8, 0.3, 0.2, 1)
+roughness = 0.6
+
+[sub_resource type="StandardMaterial3D" id="GlassMat"]
+transparency = 1
+albedo_color = Color(0.2, 0.28, 0.28, 0.03)
+roughness = 0.02
+metallic_specular = 0.5
+
+[sub_resource type="BoxMesh" id="GlassFrontBack"]
+size = Vector3(1.22, 0.5, 0.006)
+
+[sub_resource type="BoxMesh" id="GlassSide"]
+size = Vector3(0.006, 0.5, 0.45)
+
+[node name="AquariumDemo" type="Node3D"]
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866025, -0.353553, 0.353553, 0, 0.707107, 0.707107, -0.5, -0.612372, 0.612372, 0, 2, 0)
+shadow_enabled = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env")
+
+[node name="Cameras" type="Node" parent="." node_paths=PackedStringArray("cameras")]
+script = ExtResource("5_cams")
+cameras = [NodePath("../CameraAbove"), NodePath("../CameraFront")]
+
+[node name="CameraAbove" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.906308, 0.422618, 0, -0.422618, 0.906308, 0, 0.75, 1.1)
+current = true
+fov = 55.0
+
+[node name="CameraFront" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.984808, -0.173648, 0, 0.173648, 0.984808, 0, 0.2, 0.75)
+fov = 60.0
+
+[node name="WaterBody" type="Node3D" parent="."]
+script = ExtResource("1_body")
+
+[node name="Surface" type="MeshInstance3D" parent="WaterBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.42, 0)
+cast_shadow = 0
+mesh = SubResource("SurfaceMesh")
+surface_material_override/0 = SubResource("SurfaceMat")
+extra_cull_margin = 0.05
+
+[node name="TankProbe" type="ReflectionProbe" parent="WaterBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.21, 0)
+update_mode = 1
+box_projection = true
+interior = true
+size = Vector3(1.2, 0.46, 0.45)
+
+[node name="Floor" type="MeshInstance3D" parent="WaterBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.01, 0)
+mesh = SubResource("FloorMesh")
+surface_material_override/0 = SubResource("SandMat")
+
+[node name="Rock" type="StaticBody3D" parent="WaterBody"]
+transform = Transform3D(0.92388, 0, 0.382683, 0, 1, 0, -0.382683, 0, 0.92388, 0.25, 0.3, -0.05)
+
+[node name="Mesh" type="MeshInstance3D" parent="WaterBody/Rock"]
+mesh = SubResource("RockMesh")
+surface_material_override/0 = SubResource("RockMat")
+
+[node name="Shape" type="CollisionShape3D" parent="WaterBody/Rock"]
+shape = SubResource("RockShape")
+
+[node name="Stone" type="MeshInstance3D" parent="WaterBody"]
+transform = Transform3D(0.707107, 0, 0.707107, 0, 1, 0, -0.707107, 0, 0.707107, -0.3, 0.04, 0.05)
+mesh = SubResource("StoneMesh")
+surface_material_override/0 = SubResource("StoneMat")
+
+[node name="GlassFront" type="MeshInstance3D" parent="WaterBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.25, 0.228)
+cast_shadow = 0
+mesh = SubResource("GlassFrontBack")
+surface_material_override/0 = SubResource("GlassMat")
+
+[node name="GlassBack" type="MeshInstance3D" parent="WaterBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.25, -0.228)
+cast_shadow = 0
+mesh = SubResource("GlassFrontBack")
+surface_material_override/0 = SubResource("GlassMat")
+
+[node name="GlassLeft" type="MeshInstance3D" parent="WaterBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.603, 0.25, 0)
+cast_shadow = 0
+mesh = SubResource("GlassSide")
+surface_material_override/0 = SubResource("GlassMat")
+
+[node name="GlassRight" type="MeshInstance3D" parent="WaterBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.603, 0.25, 0)
+cast_shadow = 0
+mesh = SubResource("GlassSide")
+surface_material_override/0 = SubResource("GlassMat")
+
+[node name="Disturber" type="Node" parent="." node_paths=PackedStringArray("body")]
+script = ExtResource("2_dist")
+body = NodePath("../WaterBody")
