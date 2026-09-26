@@ -1,4 +1,4 @@
-[gd_scene load_steps=28 format=3]
+[gd_scene load_steps=30 format=3]
 
 [ext_resource type="Script" path="res://water/core/water_body.gd" id="1_body"]
 [ext_resource type="Script" path="res://water/demo/water_disturber.gd" id="2_dist"]
@@ -7,6 +7,8 @@
 [ext_resource type="Script" path="res://water/demo/demo_cameras.gd" id="5_cams"]
 [ext_resource type="Shader" path="res://water/volume/water_volume.gdshader" id="6_vol"]
 [ext_resource type="Shader" path="res://water/glass/glass.gdshader" id="7_glass"]
+[ext_resource type="Script" path="res://water/volume/water_volume_light.gd" id="8_vlight"]
+[ext_resource type="Shader" path="res://water/caustics/submerged.gdshader" id="9_sub"]
 
 [sub_resource type="PanoramaSkyMaterial" id="SkyMat"]
 panorama = ExtResource("4_sky")
@@ -60,13 +62,15 @@ shader_parameter/march_thickness = 0.05
 [sub_resource type="BoxMesh" id="FloorMesh"]
 size = Vector3(1.2, 0.02, 0.45)
 
-[sub_resource type="StandardMaterial3D" id="SandMat"]
-albedo_color = Color(0.76, 0.68, 0.52, 1)
-roughness = 0.95
+[sub_resource type="ShaderMaterial" id="SandMat"]
+shader = ExtResource("9_sub")
+shader_parameter/albedo = Color(0.76, 0.68, 0.52, 1)
+shader_parameter/roughness_val = 0.95
 
-[sub_resource type="StandardMaterial3D" id="RockMat"]
-albedo_color = Color(0.35, 0.33, 0.3, 1)
-roughness = 0.85
+[sub_resource type="ShaderMaterial" id="RockMat"]
+shader = ExtResource("9_sub")
+shader_parameter/albedo = Color(0.35, 0.33, 0.3, 1)
+shader_parameter/roughness_val = 0.85
 
 [sub_resource type="BoxMesh" id="RockMesh"]
 size = Vector3(0.14, 0.6, 0.1)
@@ -77,9 +81,10 @@ size = Vector3(0.14, 0.6, 0.1)
 [sub_resource type="BoxMesh" id="StoneMesh"]
 size = Vector3(0.08, 0.08, 0.08)
 
-[sub_resource type="StandardMaterial3D" id="StoneMat"]
-albedo_color = Color(0.8, 0.3, 0.2, 1)
-roughness = 0.6
+[sub_resource type="ShaderMaterial" id="StoneMat"]
+shader = ExtResource("9_sub")
+shader_parameter/albedo = Color(0.8, 0.3, 0.2, 1)
+shader_parameter/roughness_val = 0.6
 
 [sub_resource type="ShaderMaterial" id="GlassMat"]
 shader = ExtResource("7_glass")
@@ -163,6 +168,10 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.21, 0)
 cast_shadow = 0
 mesh = SubResource("VolumeMesh")
 surface_material_override/0 = SubResource("VolumeMat")
+script = ExtResource("8_vlight")
+sun = NodePath("../../DirectionalLight3D")
+environment = NodePath("../../WorldEnvironment")
+surface = NodePath("../Surface")
 
 [node name="GlassFront" type="MeshInstance3D" parent="WaterBody"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.25, 0.228)

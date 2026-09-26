@@ -48,6 +48,12 @@ uniform float max_refraction_distance : hint_range(0.01, 2.0) = 0.5;
 /// It fixes "disjointed" refraction at object edges. Costs march_steps extra depth reads.
 uniform bool high_quality_refraction = false;
 uniform int march_steps : hint_range(4, 32) = 8;
+// Single-scatter lighting, fed by water_volume_light.gd (world space).
+uniform vec3 sun_dir_world = vec3(0.35, 0.7, 0.6);
+uniform vec3 sun_irradiance = vec3(1.0);
+uniform vec3 ambient_radiance = vec3(0.3);
+uniform float scatter_strength = 1.0;
+float hg_phase_s(float c, float g) { float g2 = g * g; return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5)); }
 uniform float march_thickness : hint_range(0.005, 0.5) = 0.05;
 
 varying vec3 v_tank_pos;
@@ -178,6 +184,25 @@ void fragment() {
 	vec3 view_dir_w = normalize((INV_VIEW_MATRIX * vec4(VERTEX, 0.0)).xyz);
 	float light_len = below ? 0.0 : path_len * abs(view_dir_w.y);
 	refracted *= exp(-sigma_t * (path_len + light_len));
+	if (!below) {
+		// In-scatter along the refracted underwater view path (midpoint lighting).
+		vec3 Tt = exp(-sigma_t * path_len);
+		vec3 albedo_m = water_sigma_s / max(sigma_t, vec3(1e-4));
+		vec3 Ls = normalize((water_world_to_tank * vec4(normalize(sun_dir_world), 0.0)).xyz);
+		float cos_air = max(Ls.y, 0.0);
+		float eta_w = 1.0 / water_ior;
+		float cos_w = sqrt(max(1.0 - eta_w * eta_w * (1.0 - cos_air * cos_air), 0.0));
+		vec3 Lw = normalize(vec3(Ls.x * eta_w, cos_w, Ls.z * eta_w));
+		float f0 = pow((water_ior - 1.0) / (water_ior + 1.0), 2.0);
+		float Ft = 1.0 - (f0 + (1.0 - f0) * pow(1.0 - cos_air, 5.0));
+		float d_mid = 0.5 * light_len;
+		vec3 sun_w = sun_irradiance * Ft * exp(-sigma_t * d_mid / max(cos_w, 0.05));
+		vec3 amb_w = ambient_radiance * exp(-sigma_t * d_mid);
+		vec3 rd_w = length(T) > 0.0 ? normalize((INV_VIEW_MATRIX * vec4(T, 0.0)).xyz) : view_dir_w;
+		vec3 rd_t = normalize((water_world_to_tank * vec4(rd_w, 0.0)).xyz);
+		float ph = hg_phase_s(dot(rd_t, Lw), water_phase_g);
+		refracted += scatter_strength * albedo_m * (1.0 - Tt) * (sun_w * ph + amb_w);
+	}
 
 	// --- output ----------------------------------------------------------------
 	NORMAL = N;
