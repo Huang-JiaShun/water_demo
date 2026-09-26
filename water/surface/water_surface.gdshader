@@ -169,8 +169,15 @@ void fragment() {
 	// the scene point and the surface; convert the view-depth gap to a distance along
 	// the view ray. From below, the water lies between the camera and the surface.
 	float view_scale = length(VERTEX) / max(surface_depth, 1e-4);
-	float path_len = below ? length(VERTEX) : thickness * view_scale;
-	refracted *= exp(-water_sigma_a * path_len);
+	// Below: the camera-to-surface water is attenuated by the volume pass.
+	float path_len = below ? 0.0 : thickness * view_scale;
+	// Beer-Lambert with full extinction (absorption + out-scatter), matching the
+	// volume pass. From above, the scene point's illumination also travelled down
+	// through the water, approximated by its vertical depth below the surface.
+	vec3 sigma_t = water_sigma_a + water_sigma_s;
+	vec3 view_dir_w = normalize((INV_VIEW_MATRIX * vec4(VERTEX, 0.0)).xyz);
+	float light_len = below ? 0.0 : path_len * abs(view_dir_w.y);
+	refracted *= exp(-sigma_t * (path_len + light_len));
 
 	// --- output ----------------------------------------------------------------
 	NORMAL = N;

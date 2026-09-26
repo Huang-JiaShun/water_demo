@@ -1,10 +1,12 @@
-[gd_scene load_steps=24 format=3]
+[gd_scene load_steps=28 format=3]
 
 [ext_resource type="Script" path="res://water/core/water_body.gd" id="1_body"]
 [ext_resource type="Script" path="res://water/demo/water_disturber.gd" id="2_dist"]
 [ext_resource type="Shader" path="res://water/surface/water_surface.gdshader" id="3_surf"]
 [ext_resource type="Texture2D" path="res://assets/polyhaven/industrial_sunset_puresky_2k.hdr" id="4_sky"]
 [ext_resource type="Script" path="res://water/demo/demo_cameras.gd" id="5_cams"]
+[ext_resource type="Shader" path="res://water/volume/water_volume.gdshader" id="6_vol"]
+[ext_resource type="Shader" path="res://water/glass/glass.gdshader" id="7_glass"]
 
 [sub_resource type="PanoramaSkyMaterial" id="SkyMat"]
 panorama = ExtResource("4_sky")
@@ -14,6 +16,7 @@ sky_material = SubResource("SkyMat")
 
 [sub_resource type="Environment" id="Env"]
 background_mode = 2
+background_energy_multiplier = 0.4
 sky = SubResource("Sky")
 ambient_light_source = 3
 ambient_light_sky_contribution = 0.35
@@ -78,17 +81,23 @@ size = Vector3(0.08, 0.08, 0.08)
 albedo_color = Color(0.8, 0.3, 0.2, 1)
 roughness = 0.6
 
-[sub_resource type="StandardMaterial3D" id="GlassMat"]
-transparency = 1
-albedo_color = Color(0.2, 0.28, 0.28, 0.03)
-roughness = 0.02
-metallic_specular = 0.5
+[sub_resource type="ShaderMaterial" id="GlassMat"]
+shader = ExtResource("7_glass")
+
 
 [sub_resource type="BoxMesh" id="GlassFrontBack"]
 size = Vector3(1.22, 0.5, 0.006)
 
 [sub_resource type="BoxMesh" id="GlassSide"]
 size = Vector3(0.006, 0.5, 0.45)
+
+[sub_resource type="ShaderMaterial" id="VolumeMat"]
+render_priority = -1
+shader = ExtResource("6_vol")
+shader_parameter/box_half_extents = Vector3(0.6, 0.21, 0.225)
+
+[sub_resource type="BoxMesh" id="VolumeMesh"]
+size = Vector3(1.2, 0.42, 0.45)
 
 [node name="AquariumDemo" type="Node3D"]
 
@@ -148,6 +157,12 @@ shape = SubResource("RockShape")
 transform = Transform3D(0.707107, 0, 0.707107, 0, 1, 0, -0.707107, 0, 0.707107, -0.3, 0.04, 0.05)
 mesh = SubResource("StoneMesh")
 surface_material_override/0 = SubResource("StoneMat")
+
+[node name="Volume" type="MeshInstance3D" parent="WaterBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.21, 0)
+cast_shadow = 0
+mesh = SubResource("VolumeMesh")
+surface_material_override/0 = SubResource("VolumeMat")
 
 [node name="GlassFront" type="MeshInstance3D" parent="WaterBody"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.25, 0.228)
