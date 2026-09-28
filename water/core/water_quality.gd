@@ -17,6 +17,12 @@ enum Tier { LOW, MEDIUM, HIGH }
 ## Upper bound on CFL substeps per tick. If wave speed needs more, it is clamped.
 @export_range(1, 16, 1) var max_substeps := 8
 
+@export_group("Volume")
+## Resolution divisor for the volume march (2 = half res, 4 = quarter res).
+@export_range(1, 4, 1) var volume_downsample := 2
+## Exponential march steps per volume pixel.
+@export_range(4, 64, 1) var volume_steps := 16
+
 
 static func preset(p_tier: Tier) -> WaterQuality:
 	var q := WaterQuality.new()
@@ -25,10 +31,16 @@ static func preset(p_tier: Tier) -> WaterQuality:
 		Tier.LOW:
 			q.sim_resolution = 128
 			q.max_substeps = 2
+			q.volume_downsample = 4
+			q.volume_steps = 8
 		Tier.MEDIUM:
 			q.sim_resolution = 256
 			q.max_substeps = 4
+			q.volume_downsample = 2
+			q.volume_steps = 16
 		Tier.HIGH:
 			q.sim_resolution = 512
 			q.max_substeps = 8
+			q.volume_downsample = 2
+			q.volume_steps = 24
 	return q

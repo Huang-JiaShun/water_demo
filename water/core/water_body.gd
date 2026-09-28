@@ -7,8 +7,7 @@ extends Node3D
 ## Local space: origin at the centre of the tank floor, +Y up. The inner volume
 ## is tank_size, and the water fills it to water_depth.
 ##
-## Phase 0 owns only the wave simulation. Later phases add caustics, the volume
-## CompositorEffect and the surface mesh here.
+## Owns the wave simulation and the volume CompositorEffect (P2).
 
 signal sim_texture_ready
 
@@ -62,7 +61,20 @@ signal sim_texture_ready
 @export_flags_3d_physics var obstacle_mask := 1
 @export var bake_obstacles_on_ready := true
 
+@export_group("Volume")
+## Key light for in-scattering. The volume pass is attached to `environment`'s Compositor.
+@export var sun: DirectionalLight3D
+@export var environment: WorldEnvironment:
+	set(v):
+		_detach_volume()
+		environment = v
+		if is_inside_tree():
+			_attach_volume()
+## Multiplier on in-scattered light (1 = physical).
+@export_range(0.0, 4.0, 0.01) var scatter_strength := 1.0
+
 var sim: WaveSim
+var volume: WaterVolumeEffect
 
 var _rebuild_queued := false
 var _publish_queued := false
@@ -74,6 +86,7 @@ func _ready() -> void:
 	if quality == null:
 		quality = WaterQuality.preset(WaterQuality.Tier.MEDIUM)
 	_rebuild()
+	_attach_volume()
 	if bake_obstacles_on_ready and not Engine.is_editor_hint():
 		# Wait for physics so that colliders exist in the space.
 		await get_tree().physics_frame
@@ -84,12 +97,14 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	if sim:
 		sim.release()
+	_detach_volume()
 
 
 func _process(delta: float) -> void:
 	WaterGlobals.publish_transform(self)
 	if sim and (simulate_in_editor or not Engine.is_editor_hint()):
 		sim.update(delta)
+	_update_volume()
 
 
 # --- Public API ---------------------------------------------------------------
@@ -178,7 +193,66 @@ func _rebuild() -> void:
 	sim.damping = wave_damping
 	sim.restore = wave_restore
 	sim.configure(get_sim_size(), tank_size, quality)
+	if volume:
+		volume.set_quality(quality.volume_downsample, quality.volume_steps)
 	_do_publish()
+
+
+# --- Volume pass ---------------------------------------------------------------
+
+func _attach_volume() -> void:
+	if environment == null:
+		return
+	if volume == null:
+		volume = WaterVolumeEffect.new()
+	if quality:
+		volume.set_quality(quality.volume_downsample, quality.volume_steps)
+	var comp := environment.compositor
+	if comp == null:
+		comp = Compositor.new()
+		environment.compositor = comp
+	# Drop stale instances (e.g. one serialized when the scene was saved in the
+	# editor) so the volume is never applied twice.
+	var effects: Array[CompositorEffect] = []
+	for e in comp.compositor_effects:
+		if not (e is WaterVolumeEffect) or e == volume:
+			effects.append(e)
+	if not effects.has(volume):
+		effects.append(volume)
+	comp.compositor_effects = effects
+
+
+func _detach_volume() -> void:
+	if volume == null or environment == null or environment.compositor == null:
+		return
+	var comp := environment.compositor
+	var effects := comp.compositor_effects
+	if effects.has(volume):
+		effects.erase(volume)
+		comp.compositor_effects = effects
+
+
+func _update_volume() -> void:
+	if volume == null or optics == null:
+		return
+	volume.scatter_strength = scatter_strength
+	var to_light := Vector3.UP
+	var irr := Color.BLACK
+	if sun:
+		# Light travels along the light's -Z axis.
+		to_light = sun.global_transform.basis.z.normalized()
+		if sun.is_visible_in_tree():
+			irr = sun.light_color.srgb_to_linear() * sun.light_energy
+	var amb := Color(0.3, 0.3, 0.3)
+	if environment and environment.environment:
+		var e := environment.environment
+		amb = e.ambient_light_color.srgb_to_linear()
+		if e.ambient_light_source == Environment.AMBIENT_SOURCE_SKY or e.ambient_light_source == Environment.AMBIENT_SOURCE_BG:
+			# No cheap CPU-side sky irradiance: use a neutral daylight sky estimate.
+			amb = amb.lerp(Color(0.45, 0.55, 0.7), e.ambient_light_sky_contribution) * e.background_energy_multiplier
+		amb *= e.ambient_light_energy
+	volume.set_frame_data(global_transform.affine_inverse(), tank_size, water_depth,
+			optics, to_light, irr, amb)
 
 
 func _do_publish() -> void:

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://vl4mdvjitiv4"
+path="res://.godot/imported/volume_composite.glsl-226aed5cbd33bf078d4db847b8ca4384.res"
+
+[deps]
+
+source_file="res://water/volume/volume_composite.glsl"
+dest_files=["res://.godot/imported/volume_composite.glsl-226aed5cbd33bf078d4db847b8ca4384.res"]
+
+[params]
+

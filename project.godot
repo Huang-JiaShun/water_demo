@@ -67,3 +67,8 @@ water_ior={
 "type": "float",
 "value": 1.333
 }
+
+[rendering]
+
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
+lights_and_shadows/directional_shadow/size=8192

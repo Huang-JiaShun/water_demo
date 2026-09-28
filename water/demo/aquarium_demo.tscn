@@ -1,13 +1,11 @@
-[gd_scene load_steps=30 format=3]
+[gd_scene load_steps=26 format=3]
 
 [ext_resource type="Script" path="res://water/core/water_body.gd" id="1_body"]
 [ext_resource type="Script" path="res://water/demo/water_disturber.gd" id="2_dist"]
 [ext_resource type="Shader" path="res://water/surface/water_surface.gdshader" id="3_surf"]
 [ext_resource type="Texture2D" path="res://assets/polyhaven/industrial_sunset_puresky_2k.hdr" id="4_sky"]
 [ext_resource type="Script" path="res://water/demo/demo_cameras.gd" id="5_cams"]
-[ext_resource type="Shader" path="res://water/volume/water_volume.gdshader" id="6_vol"]
 [ext_resource type="Shader" path="res://water/glass/glass.gdshader" id="7_glass"]
-[ext_resource type="Script" path="res://water/volume/water_volume_light.gd" id="8_vlight"]
 [ext_resource type="Shader" path="res://water/caustics/submerged.gdshader" id="9_sub"]
 
 [sub_resource type="PanoramaSkyMaterial" id="SkyMat"]
@@ -18,7 +16,7 @@ sky_material = SubResource("SkyMat")
 
 [sub_resource type="Environment" id="Env"]
 background_mode = 2
-background_energy_multiplier = 0.4
+background_energy_multiplier = 1.0
 sky = SubResource("Sky")
 ambient_light_source = 3
 ambient_light_sky_contribution = 0.35
@@ -96,19 +94,16 @@ size = Vector3(1.22, 0.5, 0.006)
 [sub_resource type="BoxMesh" id="GlassSide"]
 size = Vector3(0.006, 0.5, 0.45)
 
-[sub_resource type="ShaderMaterial" id="VolumeMat"]
-render_priority = -1
-shader = ExtResource("6_vol")
-shader_parameter/box_half_extents = Vector3(0.6, 0.21, 0.225)
-
-[sub_resource type="BoxMesh" id="VolumeMesh"]
-size = Vector3(1.2, 0.42, 0.45)
-
 [node name="AquariumDemo" type="Node3D"]
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.866025, -0.353553, 0.353553, 0, 0.707107, 0.707107, -0.5, -0.612372, 0.612372, 0, 2, 0)
+light_angular_distance = 2.0
 shadow_enabled = true
+shadow_bias = 0.03
+shadow_normal_bias = 1.5
+shadow_blur = 1.5
+directional_shadow_max_distance = 10.0
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Env")
@@ -126,8 +121,10 @@ fov = 55.0
 transform = Transform3D(1, 0, 0, 0, 0.984808, -0.173648, 0, 0.173648, 0.984808, 0, 0.2, 0.75)
 fov = 60.0
 
-[node name="WaterBody" type="Node3D" parent="."]
+[node name="WaterBody" type="Node3D" parent="." node_paths=PackedStringArray("sun", "environment")]
 script = ExtResource("1_body")
+sun = NodePath("../DirectionalLight3D")
+environment = NodePath("../WorldEnvironment")
 
 [node name="Surface" type="MeshInstance3D" parent="WaterBody"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.42, 0)
@@ -137,11 +134,11 @@ surface_material_override/0 = SubResource("SurfaceMat")
 extra_cull_margin = 0.05
 
 [node name="TankProbe" type="ReflectionProbe" parent="WaterBody"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.21, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.19, 0)
 update_mode = 1
 box_projection = true
 interior = true
-size = Vector3(1.2, 0.46, 0.45)
+size = Vector3(1.2, 0.4, 0.45)
 
 [node name="Floor" type="MeshInstance3D" parent="WaterBody"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.01, 0)
@@ -162,16 +159,6 @@ shape = SubResource("RockShape")
 transform = Transform3D(0.707107, 0, 0.707107, 0, 1, 0, -0.707107, 0, 0.707107, -0.3, 0.04, 0.05)
 mesh = SubResource("StoneMesh")
 surface_material_override/0 = SubResource("StoneMat")
-
-[node name="Volume" type="MeshInstance3D" parent="WaterBody"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.21, 0)
-cast_shadow = 0
-mesh = SubResource("VolumeMesh")
-surface_material_override/0 = SubResource("VolumeMat")
-script = ExtResource("8_vlight")
-sun = NodePath("../../DirectionalLight3D")
-environment = NodePath("../../WorldEnvironment")
-surface = NodePath("../Surface")
 
 [node name="GlassFront" type="MeshInstance3D" parent="WaterBody"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.25, 0.228)

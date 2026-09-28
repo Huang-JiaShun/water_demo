@@ -1,19 +1,16 @@
 // Water surface: the air/water boundary only (see docs/water_architecture.md §3, §6.4).
 //
 // This shader owns: Fresnel, refraction, the specular highlight, Snell's window and
-// total internal reflection (TIR). Scattering belongs to the volume pass (phase 3).
-// STOPGAP until that pass exists: Beer-Lambert absorption (water_sigma_a) is applied
-// here to the transmitted light, over the water path length along the view ray.
-// Remove it once the volume pass fogs the underwater scene itself.
+// total internal reflection (TIR). Absorption and scattering belong to the volume
+// CompositorEffect (water/volume/water_volume_effect.gd), which runs before this.
 //
-// Viewed from above (front face): Godot's dielectric lighting draws the reflection
-//   and highlight, with SPECULAR set for water (F0 ~ 0.02). This shader adds the
-//   transmitted part, refracted * (1 - F).
-// Viewed from below (back face): the Fresnel is computed here, including TIR,
-//   because Godot's built-in Fresnel knows nothing about TIR. The result is used
-//   as a metallic F0 (ALBEDO = F, METALLIC = 1). This removes diffuse and scales
-//   the probe reflection by F, so reflection reaches 1 past the critical angle
-//   (~48.6 deg). Snell's window falls out of refract() naturally.
+// Both sides: the exact dielectric Fresnel F is computed here (TIR-aware from
+//   below) and used as a metallic F0 (ALBEDO = F, METALLIC = 1). This removes
+//   diffuse and scales the sky/probe reflection by F, and the transmitted part is
+//   refracted * (1 - F), so the two always sum to 1. From above this gives ~2%
+//   reflection looking straight down, rising to a mirror at grazing angles; from
+//   below reflection reaches 1 past the critical angle (~48.6 deg). Snell's window
+//   falls out of refract() naturally.
 shader_type spatial;
 render_mode blend_mix, depth_draw_always, cull_disabled, specular_schlick_ggx;
 
@@ -48,12 +45,6 @@ uniform float max_refraction_distance : hint_range(0.01, 2.0) = 0.5;
 /// It fixes "disjointed" refraction at object edges. Costs march_steps extra depth reads.
 uniform bool high_quality_refraction = false;
 uniform int march_steps : hint_range(4, 32) = 8;
-// Single-scatter lighting, fed by water_volume_light.gd (world space).
-uniform vec3 sun_dir_world = vec3(0.35, 0.7, 0.6);
-uniform vec3 sun_irradiance = vec3(1.0);
-uniform vec3 ambient_radiance = vec3(0.3);
-uniform float scatter_strength = 1.0;
-float hg_phase_s(float c, float g) { float g2 = g * g; return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5)); }
 uniform float march_thickness : hint_range(0.005, 0.5) = 0.05;
 
 varying vec3 v_tank_pos;
@@ -162,59 +153,41 @@ void fragment() {
 
 		// Depth reject: never refract in something that is in front of the water
 		// surface (a fish or the rock between camera and water). That is the
-		// classic foreground-bleeding artifact.
+		// classic foreground-bleeding artifact. Instead of snapping the whole offset
+		// to zero (which leaves a hard seam where the ripples suddenly stop), bisect
+		// for the largest fraction of the offset that still lands behind the surface,
+		// so the distortion fades out continuously towards the occluder's edge.
 		if (scene_depth(refr_uv, INV_PROJECTION_MATRIX) < surface_depth) {
-			refr_uv = SCREEN_UV;
+			vec2 offset = refr_uv - SCREEN_UV;
+			float lo = 0.0;
+			float hi = 1.0;
+			for (int i = 0; i < 5; i++) {
+				float mid = 0.5 * (lo + hi);
+				if (scene_depth(SCREEN_UV + offset * mid, INV_PROJECTION_MATRIX) < surface_depth) {
+					hi = mid;
+				} else {
+					lo = mid;
+				}
+			}
+			refr_uv = SCREEN_UV + offset * lo;
 		}
 	}
 
 	// Blur the transmitted image with roughness through the screen texture mip chain.
+	// No absorption / in-scatter here: the volume CompositorEffect (POST_OPAQUE)
+	// already fogged the underwater scene this refracts (§3: one owner per effect).
 	vec3 refracted = textureLod(screen_tex, refr_uv, roughness * 6.0).rgb;
-
-	// Absorption (stopgap, see header). From above, light crossed the water between
-	// the scene point and the surface; convert the view-depth gap to a distance along
-	// the view ray. From below, the water lies between the camera and the surface.
-	float view_scale = length(VERTEX) / max(surface_depth, 1e-4);
-	// Below: the camera-to-surface water is attenuated by the volume pass.
-	float path_len = below ? 0.0 : thickness * view_scale;
-	// Beer-Lambert with full extinction (absorption + out-scatter), matching the
-	// volume pass. From above, the scene point's illumination also travelled down
-	// through the water, approximated by its vertical depth below the surface.
-	vec3 sigma_t = water_sigma_a + water_sigma_s;
-	vec3 view_dir_w = normalize((INV_VIEW_MATRIX * vec4(VERTEX, 0.0)).xyz);
-	float light_len = below ? 0.0 : path_len * abs(view_dir_w.y);
-	refracted *= exp(-sigma_t * (path_len + light_len));
-	if (!below) {
-		// In-scatter along the refracted underwater view path (midpoint lighting).
-		vec3 Tt = exp(-sigma_t * path_len);
-		vec3 albedo_m = water_sigma_s / max(sigma_t, vec3(1e-4));
-		vec3 Ls = normalize((water_world_to_tank * vec4(normalize(sun_dir_world), 0.0)).xyz);
-		float cos_air = max(Ls.y, 0.0);
-		float eta_w = 1.0 / water_ior;
-		float cos_w = sqrt(max(1.0 - eta_w * eta_w * (1.0 - cos_air * cos_air), 0.0));
-		vec3 Lw = normalize(vec3(Ls.x * eta_w, cos_w, Ls.z * eta_w));
-		float f0 = pow((water_ior - 1.0) / (water_ior + 1.0), 2.0);
-		float Ft = 1.0 - (f0 + (1.0 - f0) * pow(1.0 - cos_air, 5.0));
-		float d_mid = 0.5 * light_len;
-		vec3 sun_w = sun_irradiance * Ft * exp(-sigma_t * d_mid / max(cos_w, 0.05));
-		vec3 amb_w = ambient_radiance * exp(-sigma_t * d_mid);
-		vec3 rd_w = length(T) > 0.0 ? normalize((INV_VIEW_MATRIX * vec4(T, 0.0)).xyz) : view_dir_w;
-		vec3 rd_t = normalize((water_world_to_tank * vec4(rd_w, 0.0)).xyz);
-		float ph = hg_phase_s(dot(rd_t, Lw), water_phase_g);
-		refracted += scatter_strength * albedo_m * (1.0 - Tt) * (sun_w * ph + amb_w);
-	}
 
 	// --- output ----------------------------------------------------------------
 	NORMAL = N;
 	ROUGHNESS = roughness;
-	if (below) {
-		ALBEDO = vec3(F);      // metallic F0 = our Fresnel (TIR-aware)
-		METALLIC = 1.0;
-	} else {
-		ALBEDO = vec3(0.0);
-		METALLIC = 0.0;
-		SPECULAR = 0.25;       // F0 = 0.08 * 0.25 = 0.02, the value for water
-	}
+	// Both sides: feed our exact Fresnel to Godot as a metallic F0. The reflection
+	// is then scaled by the same F that removes energy from the transmitted part,
+	// so reflection + transmission add up to 1 (no dark band at mid angles).
+	// (Godot's dielectric path uses F0 = 0.16 * SPECULAR^2 with a Schlick curve
+	// that does not match the transmission weight used below.)
+	ALBEDO = vec3(F);
+	METALLIC = 1.0;
 	EMISSION = refracted * (1.0 - F);
 	ALPHA = 1.0;
 }
