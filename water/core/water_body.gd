@@ -7,7 +7,7 @@ extends Node3D
 ## Local space: origin at the centre of the tank floor, +Y up. The inner volume
 ## is tank_size, and the water fills it to water_depth.
 ##
-## Owns the wave simulation and the volume CompositorEffect (P2).
+## Owns the wave simulation, caustics (P3) and the volume CompositorEffect (P2).
 
 signal sim_texture_ready
 
@@ -73,11 +73,25 @@ signal sim_texture_ready
 ## Multiplier on in-scattered light (1 = physical).
 @export_range(0.0, 4.0, 0.01) var scatter_strength := 1.0
 
+@export_group("Caustics")
+## Physics layers that cast caustic shadows (light-depth bake).
+@export_flags_3d_physics var caustic_mask := 1
+## Multiplier on the wave slopes used for caustics. Match the surface material's
+## height_scale so the caustics agree with the visible waves.
+@export_range(0.0, 10.0, 0.01) var caustic_height_scale := 3.0
+## Blend between uniform light (0) and full caustics (1).
+@export_range(0.0, 2.0, 0.01) var caustic_strength := 1.0:
+	set(v):
+		caustic_strength = v
+		_queue_publish()
+
 var sim: WaveSim
 var volume: WaterVolumeEffect
+var caustics: WaterCaustics
 
 var _rebuild_queued := false
 var _publish_queued := false
+var _physics_ready := false
 
 
 func _ready() -> void:
@@ -91,7 +105,10 @@ func _ready() -> void:
 		# Wait for physics so that colliders exist in the space.
 		await get_tree().physics_frame
 		await get_tree().physics_frame
+		_physics_ready = true
 		bake_obstacles()
+	elif not Engine.is_editor_hint():
+		_physics_ready = true
 
 
 func _enter_tree() -> void:
@@ -105,6 +122,8 @@ func _enter_tree() -> void:
 func _exit_tree() -> void:
 	if sim:
 		sim.release()
+	if caustics:
+		caustics.release()
 	_detach_volume()
 
 
@@ -112,6 +131,7 @@ func _process(delta: float) -> void:
 	WaterGlobals.publish_transform(self)
 	if sim and (simulate_in_editor or not Engine.is_editor_hint()):
 		sim.update(delta)
+	_update_caustics()
 	_update_volume()
 
 
@@ -123,6 +143,22 @@ func get_sim_size() -> Vector2i:
 	if tank_size.x >= tank_size.z:
 		return Vector2i(res, maxi(8, roundi(res * tank_size.z / tank_size.x)))
 	return Vector2i(maxi(8, roundi(res * tank_size.x / tank_size.z)), res)
+
+
+## Caustic grid size, with square texels matching the tank aspect.
+func get_caustic_size() -> Vector2i:
+	var res := quality.caustic_resolution if quality else 256
+	if tank_size.x >= tank_size.z:
+		return Vector2i(res, maxi(8, roundi(res * tank_size.z / tank_size.x)))
+	return Vector2i(maxi(8, roundi(res * tank_size.x / tank_size.z)), res)
+
+
+## Forces a light-depth re-bake (call after moving decor).
+func bake_light_depth() -> void:
+	if caustics == null or not caustics.lit or not is_inside_tree():
+		return
+	caustics.upload_light_depth(
+			LightDepthBaker.bake(self, caustics.size, caustics.light_dir, caustic_mask), caustics.light_dir)
 
 
 func world_to_tank(p: Vector3) -> Vector3:
@@ -201,6 +237,10 @@ func _rebuild() -> void:
 	sim.damping = wave_damping
 	sim.restore = wave_restore
 	sim.configure(get_sim_size(), tank_size, quality)
+	if caustics == null:
+		caustics = WaterCaustics.new()
+		caustics.textures_ready.connect(_on_sim_texture_ready)
+	caustics.configure(get_caustic_size(), quality)
 	if volume:
 		volume.set_quality(quality.volume_downsample, quality.volume_steps)
 	_do_publish()
@@ -240,6 +280,21 @@ func _detach_volume() -> void:
 		comp.compositor_effects = effects
 
 
+func _sun_dir_tank() -> Vector3:
+	if sun == null or not sun.is_visible_in_tree():
+		return Vector3.DOWN
+	return (global_transform.affine_inverse().basis * sun.global_transform.basis.z).normalized()
+
+
+func _update_caustics() -> void:
+	if caustics == null or optics == null or sim == null:
+		return
+	var moved := caustics.set_light(_sun_dir_tank(), optics.ior)
+	if moved and _physics_ready:
+		bake_light_depth()
+	caustics.update(sim.output_texture.texture_rd_rid, tank_size, water_depth, optics.ior, caustic_height_scale)
+
+
 func _update_volume() -> void:
 	if volume == null or optics == null:
 		return
@@ -261,6 +316,9 @@ func _update_volume() -> void:
 		amb *= e.ambient_light_energy
 	volume.set_frame_data(global_transform.affine_inverse(), tank_size, water_depth,
 			optics, to_light, irr, amb)
+	if caustics:
+		volume.set_caustics(caustics.caustic_texture.texture_rd_rid, caustics.light_depth_texture.texture_rd_rid,
+				quality != null and quality.caustic_god_rays and caustics.lit)
 
 
 func _do_publish() -> void:

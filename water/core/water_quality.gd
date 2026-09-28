@@ -23,6 +23,18 @@ enum Tier { LOW, MEDIUM, HIGH }
 ## Exponential march steps per volume pixel.
 @export_range(4, 64, 1) var volume_steps := 16
 
+@export_group("Caustics")
+## Caustic grid texels along the tank's longest horizontal axis.
+@export_range(32, 1024, 1) var caustic_resolution := 256
+## Photons per texel along each axis (n*n photons per texel).
+@export_range(1, 4, 1) var caustic_photons := 2
+## March steps per photon against the light-depth map.
+@export_range(1, 64, 1) var caustic_steps := 12
+## A-trous denoise iterations.
+@export_range(0, 4, 1) var caustic_denoise := 2
+## Caustic-patterned god rays and light-depth shadows in the volume march.
+@export var caustic_god_rays := true
+
 
 static func preset(p_tier: Tier) -> WaterQuality:
 	var q := WaterQuality.new()
@@ -33,6 +45,11 @@ static func preset(p_tier: Tier) -> WaterQuality:
 			q.max_substeps = 2
 			q.volume_downsample = 4
 			q.volume_steps = 8
+			q.caustic_resolution = 128
+			q.caustic_photons = 1
+			q.caustic_steps = 6
+			q.caustic_denoise = 1
+			q.caustic_god_rays = false
 		Tier.MEDIUM:
 			q.sim_resolution = 256
 			q.max_substeps = 4
@@ -43,4 +60,6 @@ static func preset(p_tier: Tier) -> WaterQuality:
 			q.max_substeps = 8
 			q.volume_downsample = 2
 			q.volume_steps = 24
+			q.caustic_resolution = 512
+			q.caustic_steps = 16
 	return q

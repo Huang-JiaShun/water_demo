@@ -67,6 +67,22 @@ water_ior={
 "type": "float",
 "value": 1.333
 }
+water_caustic_tex={
+"type": "sampler2D",
+"value": ""
+}
+water_light_depth_tex={
+"type": "sampler2D",
+"value": ""
+}
+water_light_dir={
+"type": "vec4",
+"value": Vector4(0, 1, 0, 0)
+}
+water_caustic_params={
+"type": "vec4",
+"value": Vector4(1, 0.01, 0, 0)
+}
 
 [rendering]
 

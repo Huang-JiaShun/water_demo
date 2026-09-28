@@ -20,7 +20,7 @@ layout(rgba16f, set = 0, binding = 2) uniform restrict writeonly image2D trans_o
 layout(set = 0, binding = 3, std140) uniform Params {
 	mat4 inv_proj;      // NDC (Vulkan, reversed-Z) -> view
 	mat4 view_to_tank;  // view -> tank local (origin = floor centre)
-	vec4 tank_max;      // xyz = (half size x, rest surface height, half size z)
+	vec4 tank_max;      // xyz = (half size x, rest surface height, half size z), w = 1: god rays
 	vec4 sigma_a;       // xyz, w = phase g
 	vec4 sigma_s;       // xyz, w = ior
 	vec4 sun_dir;       // xyz = toward the sun in tank space (unit), w = scatter strength
@@ -28,6 +28,11 @@ layout(set = 0, binding = 3, std140) uniform Params {
 	vec4 ambient;       // rgb above-water ambient radiance, w = step count
 	ivec4 sizes;        // xy = low-res size, zw = full-res size
 } u;
+
+// Caustics (P3). Both are indexed by the rest-surface entry point of the
+// refracted sun ray; see water/caustics/caustics.gd.
+layout(set = 0, binding = 4) uniform sampler2D caustic_tex;     // gain, 1 = calm water
+layout(set = 0, binding = 5) uniform sampler2D light_depth_tex; // distance to first solid
 
 const float PI = 3.14159265359;
 
@@ -131,6 +136,20 @@ void main() {
 			vec3 x = ro + rd * t;
 			float d = clamp(u.tank_max.y - x.y, 0.0, u.tank_max.y);
 			vec3 sun = sun_in * exp(-sig_t * d * inv_cos_w);
+			if (u.tank_max.w > 0.5) {
+				// God rays: the caustic pattern and decor shadows carried along
+				// the sun ray. Caustics are sharpest at their focal depth, so the
+				// shafts vary naturally with depth.
+				float dist = d * inv_cos_w;
+				vec2 e = x.xz + Lw.xz * dist;
+				vec2 cuv = e / (2.0 * u.tank_max.xz) + 0.5;
+				float vis = 1.0;
+				if (all(greaterThanEqual(cuv, vec2(0.0))) && all(lessThanEqual(cuv, vec2(1.0)))) {
+					float blocked = textureLod(light_depth_tex, cuv, 0.0).r;
+					vis = dist > blocked + 0.005 ? 0.0 : textureLod(caustic_tex, cuv, 0.0).r;
+				}
+				sun *= vis;
+			}
 			vec3 amb = u.ambient.rgb * exp(-sig_t * d);
 			vec3 S = sig_s * (sun * ph + amb) * u.sun_dir.w;
 

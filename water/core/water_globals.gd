@@ -17,6 +17,10 @@ const SIGMA_A := &"water_sigma_a"               # vec3       absorption (1/m)
 const SIGMA_S := &"water_sigma_s"               # vec3       scattering (1/m)
 const PHASE_G := &"water_phase_g"               # float
 const IOR := &"water_ior"                       # float
+const CAUSTIC_TEX := &"water_caustic_tex"       # sampler2D  R32F gain vs calm water, per rest-surface entry point
+const LIGHT_DEPTH_TEX := &"water_light_depth_tex" # sampler2D R32F distance along the refracted sun ray to the first solid
+const LIGHT_DIR := &"water_light_dir"           # vec4       xyz = tank-space refracted dir toward the sun, w = 1 if lit
+const CAUSTIC_PARAMS := &"water_caustic_params" # vec4       x = strength, y = dispersion (IOR spread), zw unused
 
 ## Static-ish data: textures, dimensions, optics. Call when any of them change.
 ## The parameters must already be declared in project.godot [shader_globals].
@@ -25,6 +29,9 @@ const IOR := &"water_ior"                       # float
 static func publish(body: WaterBody) -> void:
 	if body.sim:
 		RenderingServer.global_shader_parameter_set(WAVE_TEX, body.sim.output_texture)
+	if body.caustics:
+		RenderingServer.global_shader_parameter_set(CAUSTIC_TEX, body.caustics.caustic_texture)
+		RenderingServer.global_shader_parameter_set(LIGHT_DEPTH_TEX, body.caustics.light_depth_texture)
 	RenderingServer.global_shader_parameter_set(TANK_SIZE, body.tank_size)
 	RenderingServer.global_shader_parameter_set(SURFACE_HEIGHT, body.water_depth)
 	var o := body.optics
@@ -40,3 +47,9 @@ static func publish(body: WaterBody) -> void:
 static func publish_transform(body: WaterBody) -> void:
 	RenderingServer.global_shader_parameter_set(
 			WORLD_TO_TANK, Projection(body.global_transform.affine_inverse()))
+	var c := body.caustics
+	if c:
+		var d := c.light_dir
+		RenderingServer.global_shader_parameter_set(LIGHT_DIR, Vector4(d.x, d.y, d.z, 1.0 if c.lit else 0.0))
+	var disp := body.optics.dispersion if body.optics else 0.0
+	RenderingServer.global_shader_parameter_set(CAUSTIC_PARAMS, Vector4(body.caustic_strength, disp, 0.0, 0.0))

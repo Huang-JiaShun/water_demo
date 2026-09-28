@@ -12,6 +12,9 @@ extends CompositorEffect
 ## Main thread: WaterBody calls set_frame_data() every frame.
 ## Render thread: _render_callback() only.
 ##
+## P3: sun in-scatter is modulated by the caustic gain and light-depth
+## visibility (caustic-patterned god rays).
+##
 ## Not yet implemented (P4): temporal reprojection + à-trous.
 
 const MARCH_SHADER := "res://water/volume/volume_march.glsl"
@@ -31,6 +34,9 @@ const UBO_SIZE := 2 * 64 + 6 * 16 + 16
 var _frame := {}
 var _downsample := 2
 var _steps := 16
+var _caustic_rid := RID()
+var _light_depth_rid := RID()
+var _god_rays := false
 
 var _rd: RenderingDevice
 var _march_shader := RID()
@@ -39,6 +45,9 @@ var _march_pipeline := RID()
 var _composite_pipeline := RID()
 var _sampler := RID()
 var _ubo := RID()
+var _linear_sampler := RID()
+var _fallback := RID()     # 1x1 R32F = 1 (caustic gain of calm water)
+var _fallback_far := RID() # 1x1 R32F = 1e3 (nothing blocks the light)
 
 
 func _init() -> void:
@@ -51,7 +60,7 @@ func _notification(what: int) -> void:
 	if what != NOTIFICATION_PREDELETE or _rd == null:
 		return
 	# `self` is being destroyed, so any deferred work must not reference it.
-	var rids: Array[RID] = [_ubo, _sampler, _march_shader, _composite_shader]
+	var rids: Array[RID] = [_ubo, _fallback, _fallback_far, _sampler, _linear_sampler, _march_shader, _composite_shader]
 	if _on_render_thread():
 		WaterRD.free_rids(_rd, rids)
 	else:
@@ -96,6 +105,14 @@ func set_frame_data(world_to_tank: Transform3D, tank_size: Vector3, surface_heig
 	}
 
 
+## Caustic gain and light-depth textures from WaterCaustics (render-device RIDs).
+## god_rays: modulate sun in-scatter by caustics and light-depth shadowing.
+func set_caustics(caustic_rid: RID, light_depth_rid: RID, god_rays: bool) -> void:
+	_caustic_rid = caustic_rid
+	_light_depth_rid = light_depth_rid
+	_god_rays = god_rays and caustic_rid.is_valid() and light_depth_rid.is_valid()
+
+
 # =============================================================================
 # Render thread
 # =============================================================================
@@ -114,6 +131,14 @@ func _rt_init() -> void:
 	ss.min_filter = RenderingDevice.SAMPLER_FILTER_NEAREST
 	ss.mag_filter = RenderingDevice.SAMPLER_FILTER_NEAREST
 	_sampler = _rd.sampler_create(ss)
+	var ls := RDSamplerState.new()
+	ls.min_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	ls.mag_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	_linear_sampler = _rd.sampler_create(ls)
+	var tf := WaterRD.texture_format(Vector2i.ONE, RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+			RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT)
+	_fallback = _rd.texture_create(tf, RDTextureView.new(), [PackedFloat32Array([1.0]).to_byte_array()])
+	_fallback_far = _rd.texture_create(tf, RDTextureView.new(), [PackedFloat32Array([1e3]).to_byte_array()])
 	_ubo = _rd.uniform_buffer_create(UBO_SIZE)
 
 
@@ -145,6 +170,9 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 				RD.TEXTURE_SAMPLES_1, low, 1, 1, true, false)
 		buffers.create_texture(CONTEXT, TEX_TRANS, RD.DATA_FORMAT_R16G16B16A16_SFLOAT, usage,
 				RD.TEXTURE_SAMPLES_1, low, 1, 1, true, false)
+	var god_rays := _god_rays and _rd.texture_is_valid(_caustic_rid) and _rd.texture_is_valid(_light_depth_rid)
+	var caustic_tex := _caustic_rid if god_rays else _fallback
+	var light_depth_tex := _light_depth_rid if god_rays else _fallback_far
 	var inscatter := buffers.get_texture(CONTEXT, TEX_INSCATTER)
 	var trans := buffers.get_texture(CONTEXT, TEX_TRANS)
 
@@ -157,13 +185,15 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 		var proj := scene_data.get_view_projection(view)
 		# Match the projection the depth buffer was rendered with (Vulkan: z in [0,1], reversed).
 		var inv_proj := (Projection.create_depth_correction(true) * proj).inverse()
-		_rd.buffer_update(_ubo, 0, UBO_SIZE, _pack_ubo(f, inv_proj, Projection(view_to_tank), low, full))
+		_rd.buffer_update(_ubo, 0, UBO_SIZE, _pack_ubo(f, inv_proj, Projection(view_to_tank), low, full, god_rays))
 
 		var march_set := UniformSetCacheRD.get_cache(_march_shader, 0, [
 			_sampler_uniform(0, depth),
 			WaterRD.image_uniform(1, inscatter),
 			WaterRD.image_uniform(2, trans),
 			_ubo_uniform(3),
+			_sampler_uniform(4, caustic_tex, _linear_sampler),
+			_sampler_uniform(5, light_depth_tex),
 		])
 		var comp_set := UniformSetCacheRD.get_cache(_composite_shader, 0, [
 			WaterRD.image_uniform(0, color),
@@ -188,7 +218,7 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 		_rd.compute_list_end()
 
 
-func _pack_ubo(f: Dictionary, inv_proj: Projection, view_to_tank: Projection, low: Vector2i, full: Vector2i) -> PackedByteArray:
+func _pack_ubo(f: Dictionary, inv_proj: Projection, view_to_tank: Projection, low: Vector2i, full: Vector2i, god_rays: bool) -> PackedByteArray:
 	var fl := PackedFloat32Array()
 	for m: Projection in [inv_proj, view_to_tank]:
 		for c in 4:
@@ -200,7 +230,7 @@ func _pack_ubo(f: Dictionary, inv_proj: Projection, view_to_tank: Projection, lo
 	var sd: Vector3 = f.sun_dir_tank
 	var si: Color = f.sun_irr
 	var am: Color = f.ambient
-	fl.append_array([tm.x, tm.y, tm.z, 0.0])
+	fl.append_array([tm.x, tm.y, tm.z, 1.0 if god_rays else 0.0])
 	fl.append_array([sa.x, sa.y, sa.z, f.g])
 	fl.append_array([ss.x, ss.y, ss.z, f.ior])
 	fl.append_array([sd.x, sd.y, sd.z, scatter_strength])
@@ -213,11 +243,11 @@ func _pack_ubo(f: Dictionary, inv_proj: Projection, view_to_tank: Projection, lo
 	return bytes
 
 
-func _sampler_uniform(binding: int, texture: RID) -> RDUniform:
+func _sampler_uniform(binding: int, texture: RID, sampler := RID()) -> RDUniform:
 	var u := RDUniform.new()
 	u.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
 	u.binding = binding
-	u.add_id(_sampler)
+	u.add_id(sampler if sampler.is_valid() else _sampler)
 	u.add_id(texture)
 	return u
 
