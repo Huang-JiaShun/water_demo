@@ -175,6 +175,7 @@ Forward+ is required for compute and the Compositor. On Compatibility/Mobile, fa
 3. **P2 Volume:** CompositorEffect march + composite (no temporal yet), plus `water_fog()` for transparents.
 4. **P3 Caustics:** light-depth bake, photon splat, denoise, `underwater.gdshaderinc`, caustic god rays in the volume.
 5. **P4 Polish:** temporal + à-trous for the volume, true-RGB caustics, a meniscus/foam line at the glass, bubbles, and tier switching.
+   - Done: `volume_temporal.glsl` (reprojects through tank space, rejects on depth mismatch, 3×3 neighbourhood clamp) and `volume_denoise.glsl` (depth-aware à-trous). True-RGB caustics use one r32ui photon image with three stacked bands resolved to RGBA32F. The meniscus and foam line live in `water_surface.gdshader`. `water/bubbles/` has a GPUParticles3D stream shaded with `water_fog()`. `WaterBody.set_tier()` handles tier switching (keys 1/2/3 in the demo). Check with `water/tests/verify_p4.gd`.
 
 ## 9. Issues in the current demo code (addressed by P0)
 - `if (new_v < 0.0) new_v = 0.0;` clips every trough, so the physics is wrong (only positive waves survive).

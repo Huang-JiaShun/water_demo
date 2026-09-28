@@ -1,8 +1,8 @@
 @tool
 class_name WaterQuality
 extends Resource
-## Per-tier budgets. Only simulation fields are used in P0; later phases add
-## caustic / volume / refraction settings here (see docs/water_architecture.md §7).
+## Per-tier budgets (see docs/water_architecture.md §7). WaterBody.set_tier()
+## swaps in a preset at runtime.
 
 enum Tier { LOW, MEDIUM, HIGH }
 
@@ -22,6 +22,10 @@ enum Tier { LOW, MEDIUM, HIGH }
 @export_range(1, 4, 1) var volume_downsample := 2
 ## Exponential march steps per volume pixel.
 @export_range(4, 64, 1) var volume_steps := 16
+## Temporal reprojection of the volume (per-frame jitter + history blend).
+@export var volume_temporal := true
+## Depth-aware a-trous iterations on the low-res volume after the temporal pass.
+@export_range(0, 3, 1) var volume_denoise := 0
 
 @export_group("Caustics")
 ## Caustic grid texels along the tank's longest horizontal axis.
@@ -34,6 +38,13 @@ enum Tier { LOW, MEDIUM, HIGH }
 @export_range(0, 4, 1) var caustic_denoise := 2
 ## Caustic-patterned god rays and light-depth shadows in the volume march.
 @export var caustic_god_rays := true
+## Trace red, green and blue photons with their own IOR (true dispersion, 3x
+## splat cost). Off: one mono pass with dispersion faked at sampling time.
+@export var caustic_rgb := false
+
+@export_group("Surface")
+## Exponential depth march for refraction (HPWater high-precision mode).
+@export var high_quality_refraction := false
 
 
 static func preset(p_tier: Tier) -> WaterQuality:
@@ -50,6 +61,7 @@ static func preset(p_tier: Tier) -> WaterQuality:
 			q.caustic_steps = 6
 			q.caustic_denoise = 1
 			q.caustic_god_rays = false
+			q.volume_temporal = false
 		Tier.MEDIUM:
 			q.sim_resolution = 256
 			q.max_substeps = 4
@@ -60,6 +72,9 @@ static func preset(p_tier: Tier) -> WaterQuality:
 			q.max_substeps = 8
 			q.volume_downsample = 2
 			q.volume_steps = 24
+			q.volume_denoise = 1
 			q.caustic_resolution = 512
 			q.caustic_steps = 16
+			q.caustic_rgb = true
+			q.high_quality_refraction = true
 	return q

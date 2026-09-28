@@ -8,7 +8,9 @@ extends RefCounted
 ##   light_depth_texture (R32F): distance along the flat-surface refracted sun
 ##     ray from the surface to the first solid (decor, floor or wall). Baked on
 ##     the main thread by LightDepthBaker, re-baked when the sun moves.
-##   caustic_texture (R32F): irradiance gain relative to calm water (1 = flat).
+##   caustic_texture (RGBA32F): per-channel irradiance gain relative to calm
+##     water (1 = flat). Mono mode writes the same gain to r, g and b; true-RGB
+##     mode traces each channel with its own IOR (quality.caustic_rgb).
 ##
 ## A point q underwater maps to its entry texel by walking back along Lw:
 ##   dist = (surface - q.y) / Lw.y,  entry = q.xz + Lw.xz * dist
@@ -35,6 +37,7 @@ var lit := false
 var _photons_per_axis := 2
 var _march_steps := 16
 var _denoise_iterations := 2
+var _channels := 1
 var _generation := 0
 var _baked_dir := Vector3.ZERO
 
@@ -56,9 +59,10 @@ func configure(p_size: Vector2i, quality: WaterQuality) -> void:
 	_photons_per_axis = quality.caustic_photons
 	_march_steps = quality.caustic_steps
 	_denoise_iterations = quality.caustic_denoise
+	_channels = 3 if quality.caustic_rgb else 1
 	_baked_dir = Vector3.ZERO
 	_generation += 1
-	RenderingServer.call_on_render_thread(_rt_init.bind(size, _generation))
+	RenderingServer.call_on_render_thread(_rt_init.bind(size, _channels, _generation))
 
 
 func release() -> void:
@@ -88,8 +92,15 @@ func upload_light_depth(depths: PackedFloat32Array, for_dir: Vector3) -> void:
 	RenderingServer.call_on_render_thread(_rt_upload_depth.bind(depths.to_byte_array()))
 
 
+## True when the caustic texture holds real per-channel dispersion.
+func is_true_rgb() -> bool:
+	return _channels == 3
+
+
 ## wave_rid: the sim's RGBA16F output. Call once per frame after the sim update.
-func update(wave_rid: RID, tank_size: Vector3, surface_height: float, ior: float, height_scale: float) -> void:
+## dispersion: IOR spread between red and blue (used in true-RGB mode).
+func update(wave_rid: RID, tank_size: Vector3, surface_height: float, ior: float, height_scale: float,
+		dispersion := 0.0) -> void:
 	if size == Vector2i.ZERO:
 		return
 	var pc := WaterRD.push_constant(
@@ -97,7 +108,7 @@ func update(wave_rid: RID, tank_size: Vector3, surface_height: float, ior: float
 			PackedFloat32Array([
 				light_dir.x, light_dir.y, light_dir.z, ior,
 				tank_size.x * 0.5, surface_height, tank_size.z * 0.5, height_scale,
-				FIXED_POINT, 0.0, 0.0, 0.0,
+				FIXED_POINT, dispersion, float(_channels), 0.0,
 			]))
 	RenderingServer.call_on_render_thread(_rt_update.bind(wave_rid, pc, lit))
 
@@ -114,7 +125,7 @@ func _publish(caustic: RID, depth: RID, generation: int) -> void:
 # Render thread
 # =============================================================================
 
-func _rt_init(p_size: Vector2i, generation: int) -> void:
+func _rt_init(p_size: Vector2i, channels: int, generation: int) -> void:
 	_rd = RenderingServer.get_rendering_device()
 	if _rd == null:
 		push_error("WaterCaustics: requires a RenderingDevice renderer.")
@@ -134,14 +145,14 @@ func _rt_init(p_size: Vector2i, generation: int) -> void:
 	_sampler = _rd.sampler_create(ss)
 
 	var RD := RenderingDevice
-	_photons = _rd.texture_create(WaterRD.texture_format(p_size, RD.DATA_FORMAT_R32_UINT,
+	_photons = _rd.texture_create(WaterRD.texture_format(Vector2i(p_size.x, p_size.y * channels), RD.DATA_FORMAT_R32_UINT,
 			RD.TEXTURE_USAGE_STORAGE_BIT | RD.TEXTURE_USAGE_CAN_COPY_TO_BIT), RDTextureView.new())
 	_rd.texture_clear(_photons, Color(0, 0, 0, 0), 0, 1, 0, 1)
 
 	var f32 := RD.TEXTURE_USAGE_STORAGE_BIT | RD.TEXTURE_USAGE_SAMPLING_BIT \
 			| RD.TEXTURE_USAGE_CAN_COPY_TO_BIT | RD.TEXTURE_USAGE_CAN_COPY_FROM_BIT
 	for i in 2:
-		_gain[i] = _rd.texture_create(WaterRD.texture_format(p_size, RD.DATA_FORMAT_R32_SFLOAT, f32), RDTextureView.new())
+		_gain[i] = _rd.texture_create(WaterRD.texture_format(p_size, RD.DATA_FORMAT_R32G32B32A32_SFLOAT, f32), RDTextureView.new())
 		_rd.texture_clear(_gain[i], Color(1, 1, 1, 1), 0, 1, 0, 1)
 	var far := PackedFloat32Array()
 	far.resize(p_size.x * p_size.y)
@@ -190,12 +201,13 @@ func _rt_update(wave_rid: RID, pc: PackedByteArray, p_lit: bool) -> void:
 	_rd.compute_list_bind_compute_pipeline(cl, _splat_pipeline)
 	_rd.compute_list_bind_uniform_set(cl, splat_set, 0)
 	_rd.compute_list_set_push_constant(cl, pc, pc.size())
-	_rd.compute_list_dispatch(cl, WaterRD.group_count(size.x * sub, LOCAL_SIZE), WaterRD.group_count(size.y * sub, LOCAL_SIZE), 1)
+	var channels := int(pc.decode_float(56))
+	_rd.compute_list_dispatch(cl, WaterRD.group_count(size.x * sub, LOCAL_SIZE), WaterRD.group_count(size.y * sub, LOCAL_SIZE), channels)
 	_rd.compute_list_add_barrier(cl)
 
 	_rd.compute_list_bind_compute_pipeline(cl, _denoise_pipeline)
 	var dpc := WaterRD.push_constant(PackedInt32Array([size.x, size.y, 0, 0]),
-			PackedFloat32Array([1.0 / FIXED_POINT, 0.0, 0.0, 0.0]))
+			PackedFloat32Array([1.0 / FIXED_POINT, float(channels), 0.0, 0.0]))
 	_rd.compute_list_bind_uniform_set(cl, resolve_set, 0)
 	_rd.compute_list_set_push_constant(cl, dpc, dpc.size())
 	_rd.compute_list_dispatch(cl, gx, gy, 1)

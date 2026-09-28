@@ -11,7 +11,7 @@
 global uniform sampler2D water_caustic_tex;
 global uniform sampler2D water_light_depth_tex;
 global uniform vec4 water_light_dir;
-global uniform vec4 water_caustic_params; // x = strength, y = dispersion
+global uniform vec4 water_caustic_params; // x = strength, y = dispersion, z = 1: texture is true RGB
 
 // Returns per-channel caustic gain for sunlight reaching world_pos (1 = no caustic effect).
 // Points above the surface, outside the footprint or behind a light-depth
@@ -28,13 +28,18 @@ vec3 water_caustics(vec3 world_pos) {
 	float blocked = textureLod(water_light_depth_tex, uv, 0.0).r;
 	if (dist > blocked + 0.01) return vec3(1.0);
 
-	// Fake dispersion: red refracts slightly less and blue slightly more, which
-	// shifts their entry points along the horizontal light direction with depth.
-	vec2 shift = normalize(Lw.xz + vec2(1e-5)) * dist * water_caustic_params.y / water_tank_size.xz;
 	vec3 g;
-	g.r = textureLod(water_caustic_tex, uv - shift, 0.0).r;
-	g.g = textureLod(water_caustic_tex, uv, 0.0).r;
-	g.b = textureLod(water_caustic_tex, uv + shift, 0.0).r;
+	if (water_caustic_params.z > 0.5) {
+		// True RGB: every channel was traced with its own IOR.
+		g = textureLod(water_caustic_tex, uv, 0.0).rgb;
+	} else {
+		// Fake dispersion: red refracts slightly less and blue slightly more, which
+		// shifts their entry points along the horizontal light direction with depth.
+		vec2 shift = normalize(Lw.xz + vec2(1e-5)) * dist * water_caustic_params.y / water_tank_size.xz;
+		g.r = textureLod(water_caustic_tex, uv - shift, 0.0).r;
+		g.g = textureLod(water_caustic_tex, uv, 0.0).g;
+		g.b = textureLod(water_caustic_tex, uv + shift, 0.0).b;
+	}
 	// Fade in just below the surface, where the pattern has not formed yet.
 	float fade = smoothstep(0.0, 0.02, depth) * water_caustic_params.x;
 	return mix(vec3(1.0), g, fade);

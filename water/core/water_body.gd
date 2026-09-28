@@ -8,6 +8,7 @@ extends Node3D
 ## is tank_size, and the water fills it to water_depth.
 ##
 ## Owns the wave simulation, caustics (P3) and the volume CompositorEffect (P2).
+## set_tier() swaps the quality preset at runtime (P4).
 
 signal sim_texture_ready
 
@@ -53,6 +54,9 @@ signal sim_texture_ready
 	set(v):
 		wave_restore = v
 		if sim: sim.restore = v
+## Surface mesh using water_surface.gdshader. Tier switching toggles its
+## high-precision refraction. Empty: the first child using that shader.
+@export var surface: GeometryInstance3D
 ## Run the simulation in the editor too, so the surface can be previewed.
 @export var simulate_in_editor := false
 
@@ -136,6 +140,16 @@ func _process(delta: float) -> void:
 
 
 # --- Public API ---------------------------------------------------------------
+
+## Replaces `quality` with the preset for `tier` and rebuilds every subsystem.
+## Waves restart from rest; obstacles and light depth are re-baked.
+func set_tier(tier: WaterQuality.Tier) -> void:
+	quality = WaterQuality.preset(tier)
+	_rebuild()
+
+
+func get_tier() -> WaterQuality.Tier:
+	return quality.tier if quality else WaterQuality.Tier.MEDIUM
 
 ## Sim grid size, with square texels matching the tank aspect.
 func get_sim_size() -> Vector2i:
@@ -242,8 +256,39 @@ func _rebuild() -> void:
 		caustics.textures_ready.connect(_on_sim_texture_ready)
 	caustics.configure(get_caustic_size(), quality)
 	if volume:
-		volume.set_quality(quality.volume_downsample, quality.volume_steps)
+		_apply_volume_quality()
+	_apply_surface_quality()
+	# configure() reset the obstacle mask; light depth re-bakes via set_light().
+	if _physics_ready and bake_obstacles_on_ready:
+		bake_obstacles()
 	_do_publish()
+
+
+func _apply_volume_quality() -> void:
+	volume.set_quality(quality.volume_downsample, quality.volume_steps,
+			quality.volume_temporal, quality.volume_denoise)
+
+
+func _surface_material() -> ShaderMaterial:
+	var candidates: Array[Node] = get_children()
+	if surface:
+		candidates = [surface]
+	for n in candidates:
+		var g := n as GeometryInstance3D
+		if g == null:
+			continue
+		var m := g.material_override as ShaderMaterial
+		if m == null and g is MeshInstance3D:
+			m = (g as MeshInstance3D).get_surface_override_material(0) as ShaderMaterial
+		if m and m.shader and m.shader.resource_path.ends_with("water_surface.gdshader"):
+			return m
+	return null
+
+
+func _apply_surface_quality() -> void:
+	var m := _surface_material()
+	if m:
+		m.set_shader_parameter(&"high_quality_refraction", quality.high_quality_refraction)
 
 
 # --- Volume pass ---------------------------------------------------------------
@@ -254,7 +299,7 @@ func _attach_volume() -> void:
 	if volume == null:
 		volume = WaterVolumeEffect.new()
 	if quality:
-		volume.set_quality(quality.volume_downsample, quality.volume_steps)
+		_apply_volume_quality()
 	var comp := environment.compositor
 	if comp == null:
 		comp = Compositor.new()
@@ -292,7 +337,8 @@ func _update_caustics() -> void:
 	var moved := caustics.set_light(_sun_dir_tank(), optics.ior)
 	if moved and _physics_ready:
 		bake_light_depth()
-	caustics.update(sim.output_texture.texture_rd_rid, tank_size, water_depth, optics.ior, caustic_height_scale)
+	caustics.update(sim.output_texture.texture_rd_rid, tank_size, water_depth, optics.ior, caustic_height_scale,
+			optics.dispersion)
 
 
 func _update_volume() -> void:

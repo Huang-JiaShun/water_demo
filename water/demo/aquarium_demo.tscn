@@ -1,4 +1,4 @@
-[gd_scene load_steps=26 format=3]
+[gd_scene load_steps=28 format=3]
 
 [ext_resource type="Script" path="res://water/core/water_body.gd" id="1_body"]
 [ext_resource type="Script" path="res://water/demo/water_disturber.gd" id="2_dist"]
@@ -7,6 +7,8 @@
 [ext_resource type="Script" path="res://water/demo/demo_cameras.gd" id="5_cams"]
 [ext_resource type="Shader" path="res://water/glass/glass.gdshader" id="7_glass"]
 [ext_resource type="Shader" path="res://water/caustics/submerged.gdshader" id="9_sub"]
+[ext_resource type="Script" path="res://water/bubbles/water_bubbles.gd" id="10_bub"]
+[ext_resource type="Script" path="res://water/demo/demo_quality.gd" id="11_qual"]
 
 [sub_resource type="PanoramaSkyMaterial" id="SkyMat"]
 panorama = ExtResource("4_sky")
@@ -121,8 +123,9 @@ fov = 55.0
 transform = Transform3D(1, 0, 0, 0, 0.984808, -0.173648, 0, 0.173648, 0.984808, 0, 0.2, 0.75)
 fov = 60.0
 
-[node name="WaterBody" type="Node3D" parent="." node_paths=PackedStringArray("sun", "environment")]
+[node name="WaterBody" type="Node3D" parent="." node_paths=PackedStringArray("sun", "environment", "surface")]
 script = ExtResource("1_body")
+surface = NodePath("Surface")
 sun = NodePath("../DirectionalLight3D")
 environment = NodePath("../WorldEnvironment")
 
@@ -186,4 +189,14 @@ surface_material_override/0 = SubResource("GlassMat")
 
 [node name="Disturber" type="Node" parent="." node_paths=PackedStringArray("body")]
 script = ExtResource("2_dist")
+body = NodePath("../WaterBody")
+
+[node name="Bubbles" type="GPUParticles3D" parent="WaterBody" node_paths=PackedStringArray("body")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.45, 0.01, -0.12)
+amount = 48
+script = ExtResource("10_bub")
+body = NodePath("..")
+
+[node name="Quality" type="Node" parent="." node_paths=PackedStringArray("body")]
+script = ExtResource("11_qual")
 body = NodePath("../WaterBody")

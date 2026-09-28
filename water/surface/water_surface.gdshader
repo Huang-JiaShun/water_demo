@@ -36,6 +36,19 @@ uniform vec2 detail_speed_b = vec2(-0.017, 0.026);
 group_uniforms shading;
 uniform float roughness : hint_range(0.0, 1.0) = 0.03;
 
+group_uniforms meniscus;
+/// Capillary rise at the glass: water climbs the walls over ~2-3 mm (capillary length of water).
+uniform float meniscus_width : hint_range(0.0005, 0.02) = 0.0025;
+/// Height the water climbs at the wall (m).
+uniform float meniscus_height : hint_range(0.0, 0.01) = 0.002;
+/// Thin bright foam/bubble line along the glass, broken up by noise.
+uniform float foam_line_strength : hint_range(0.0, 1.0) = 0.35;
+uniform float foam_line_width : hint_range(0.0005, 0.03) = 0.004;
+/// Foam where the simulated surface is steep (splashes, drops).
+uniform float slope_foam_strength : hint_range(0.0, 1.0) = 0.25;
+uniform float slope_foam_threshold : hint_range(0.0, 1.0) = 0.25;
+uniform vec3 foam_color : source_color = vec3(0.92, 0.95, 0.97);
+
 group_uniforms refraction;
 /// 1 = physically sized offset. Raise it to exaggerate.
 uniform float refraction_scale : hint_range(0.0, 4.0) = 1.0;
@@ -85,19 +98,46 @@ float ign(vec2 p) {
 	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
 }
 
+// Distance (m) from a tank-space point to the nearest side wall, and the unit
+// XZ direction toward that wall.
+float wall_distance(vec2 xz, out vec2 to_wall) {
+	vec2 half_size = water_tank_size.xz * 0.5;
+	vec2 d = half_size - abs(xz);
+	if (d.x < d.y) {
+		to_wall = vec2(sign(xz.x), 0.0);
+		return max(d.x, 0.0);
+	}
+	to_wall = vec2(0.0, sign(xz.y));
+	return max(d.y, 0.0);
+}
+
+// Meniscus profile: height above rest and its slope toward the wall.
+// Exponential capillary profile h(d) = H * exp(-d / w).
+vec2 meniscus(float d) {
+	float e = exp(-d / meniscus_width);
+	return vec2(meniscus_height * e, meniscus_height * e / meniscus_width);
+}
+
 // --- stages ---------------------------------------------------------------------
 
 void vertex() {
 	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_tank_pos = water_tank_pos(world);
 	// The mesh is a child of WaterBody with no rotation, so local +Y is tank +Y.
-	VERTEX.y += water_sample_wave(water_tank_uv(v_tank_pos)).x * height_scale;
+	vec2 to_wall;
+	float dw = wall_distance(v_tank_pos.xz, to_wall);
+	VERTEX.y += water_sample_wave(water_tank_uv(v_tank_pos)).x * height_scale + meniscus(dw).x;
 }
 
 void fragment() {
 	// Normal: simulated slopes, sampled per pixel so they stay sharp, plus scrolling detail.
 	vec2 slope = water_sample_wave(water_tank_uv(v_tank_pos)).yz * height_scale;
+	float wave_slope = length(slope);
 	vec2 xz = v_tank_pos.xz;
+	vec2 to_wall;
+	float dw = wall_distance(xz, to_wall);
+	// The surface rises toward the glass, so its gradient points at the wall.
+	slope += to_wall * meniscus(dw).y;
 	vec2 da = texture(detail_normal, xz * detail_scale_a + TIME * detail_speed_a).xy * 2.0 - 1.0;
 	vec2 db = texture(detail_normal, xz * detail_scale_b + TIME * detail_speed_b).xy * 2.0 - 1.0;
 	vec3 n_tank = normalize(vec3(-slope.x, 1.0, -slope.y)
@@ -178,17 +218,26 @@ void fragment() {
 	// already fogged the underwater scene this refracts (§3: one owner per effect).
 	vec3 refracted = textureLod(screen_tex, refr_uv, roughness * 6.0).rgb;
 
+	// --- foam ------------------------------------------------------------------
+	// A thin, broken line of trapped micro-bubbles where the water meets the
+	// glass, plus foam on steep splash fronts. Broken up by the detail texture.
+	float breakup = texture(detail_normal, xz * 9.0 + TIME * vec2(0.004, -0.003)).z;
+	float line = exp(-dw / foam_line_width) * foam_line_strength;
+	float steep = smoothstep(slope_foam_threshold, slope_foam_threshold * 2.0 + 0.05, wave_slope) * slope_foam_strength;
+	float foam = clamp((line + steep) * smoothstep(0.35, 0.8, breakup + 0.25 * line), 0.0, 1.0);
+
 	// --- output ----------------------------------------------------------------
 	NORMAL = N;
-	ROUGHNESS = roughness;
+	ROUGHNESS = mix(roughness, 0.7, foam);
 	// Both sides: feed our exact Fresnel to Godot as a metallic F0. Godot applies
 	// its own Schlick curve on top (F0 + (1-F0)(1-cos)^5), so invert that here:
 	// the reflection then comes out at weight F, matching the (1 - F) that scales
 	// transmission, and reflection + transmission add up to 1.
 	// (Godot's dielectric path uses F0 = 0.16 * SPECULAR^2, which cannot match.)
 	float p = pow(1.0 - cos_i, 5.0);
-	ALBEDO = vec3(clamp((F - p) / max(1.0 - p, 1e-4), 0.0, 1.0));
-	METALLIC = 1.0;
-	EMISSION = refracted * (1.0 - F);
+	ALBEDO = mix(vec3(clamp((F - p) / max(1.0 - p, 1e-4), 0.0, 1.0)), foam_color, foam);
+	// Foam is a diffuse scatterer that hides the refraction beneath it.
+	METALLIC = 1.0 - foam;
+	EMISSION = refracted * (1.0 - F) * (1.0 - foam);
 	ALPHA = 1.0;
 }

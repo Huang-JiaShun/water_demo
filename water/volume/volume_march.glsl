@@ -8,7 +8,8 @@
 //
 // Outputs:
 //   inscatter_out = (in-scattered radiance rgb, linear view depth of the sample)
-//   trans_out     = (transmittance rgb, 1)
+//   trans_out     = (transmittance rgb, view distance of the reprojection point)
+//                   .a = 0 means the ray missed the water (nothing to reproject)
 // The composite pass does color = scene * T + inscatter.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -31,7 +32,7 @@ layout(set = 0, binding = 3, std140) uniform Params {
 
 // Caustics (P3). Both are indexed by the rest-surface entry point of the
 // refracted sun ray; see water/caustics/caustics.gd.
-layout(set = 0, binding = 4) uniform sampler2D caustic_tex;     // gain, 1 = calm water
+layout(set = 0, binding = 4) uniform sampler2D caustic_tex;     // rgb gain, 1 = calm water
 layout(set = 0, binding = 5) uniform sampler2D light_depth_tex; // distance to first solid
 
 const float PI = 3.14159265359;
@@ -121,7 +122,8 @@ void main() {
 
 		int steps = max(int(u.ambient.w), 1);
 		float seg = t1 - t0;
-		// Stable per pixel dither (no per-frame jitter until the temporal pass exists).
+		// Per pixel dither. With the temporal pass on, the frame index offsets it
+		// every frame and the history integrates the jitter (0 when temporal is off).
 		float jitter = ign(vec2(lo) + u.sun_irr.w * 5.588238);
 		const float K = 2.0; // exponential spacing: denser near the camera
 		float norm = 1.0 / (exp(K) - 1.0);
@@ -143,10 +145,10 @@ void main() {
 				float dist = d * inv_cos_w;
 				vec2 e = x.xz + Lw.xz * dist;
 				vec2 cuv = e / (2.0 * u.tank_max.xz) + 0.5;
-				float vis = 1.0;
+				vec3 vis = vec3(1.0);
 				if (all(greaterThanEqual(cuv, vec2(0.0))) && all(lessThanEqual(cuv, vec2(1.0)))) {
 					float blocked = textureLod(light_depth_tex, cuv, 0.0).r;
-					vis = dist > blocked + 0.005 ? 0.0 : textureLod(caustic_tex, cuv, 0.0).r;
+					vis = dist > blocked + 0.005 ? vec3(0.0) : textureLod(caustic_tex, cuv, 0.0).rgb;
 				}
 				sun *= vis;
 			}
@@ -168,6 +170,13 @@ void main() {
 		}
 	}
 
+	// Reprojection point: the opaque hit (its view depth is what inscatter.a
+	// stores, so the temporal depth test compares like with like), or the middle
+	// of the water segment for sky pixels. Back in view units.
+	float rep = 0.0;
+	if (t1 > t0) {
+		rep = (depth > 0.0 ? t_scene : 0.5 * (t0 + t1)) / scale;
+	}
 	imageStore(inscatter_out, lo, vec4(L, min(lin_depth, 6e4)));
-	imageStore(trans_out, lo, vec4(T, 1.0));
+	imageStore(trans_out, lo, vec4(T, rep));
 }

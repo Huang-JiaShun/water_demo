@@ -12,6 +12,11 @@
 // projected back along d0 to its entry texel, and the photon is added there. A
 // calm surface maps each photon onto its own texel, giving a uniform gain of 1.
 // Waves redistribute photons without adding energy.
+//
+// True RGB (gl_GlobalInvocationID.z = channel): each channel refracts with its
+// own IOR and splats into its own band of the photon image (rows
+// [channel * size.y, (channel + 1) * size.y)). The entry-point mapping keeps
+// using the mono Lw, so dispersion shows up as a real per-channel shift.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -25,7 +30,7 @@ layout(push_constant, std430) uniform Params {
 	int steps;    // march steps
 	vec4 light;   // xyz = Lw (toward the light, below the surface, unit), w = ior
 	vec4 tank;    // x = half size X, y = rest surface height, z = half size Z, w = wave height scale
-	vec4 misc;    // x = fixed-point energy of one photon
+	vec4 misc;    // x = fixed-point energy of one photon, y = IOR spread (blue - red), z = channel count
 } p;
 
 vec2 xz_to_uv(vec2 xz) {
@@ -52,7 +57,7 @@ float fresnel_t(float cos_i, float ior) {
 	return 1.0 - (f0 + (1.0 - f0) * pow(1.0 - clamp(cos_i, 0.0, 1.0), 5.0));
 }
 
-void splat(vec2 uv, float energy) {
+void splat(vec2 uv, float energy, int band) {
 	vec2 f = uv * vec2(p.size) - 0.5;
 	ivec2 c = ivec2(floor(f));
 	vec2 w = f - vec2(c);
@@ -60,7 +65,7 @@ void splat(vec2 uv, float energy) {
 	ivec2 os[4] = ivec2[4](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(1, 1));
 	for (int i = 0; i < 4; i++) {
 		// Clamp rather than drop, so edge texels keep their full share.
-		ivec2 t = clamp(c + os[i], ivec2(0), p.size - 1);
+		ivec2 t = clamp(c + os[i], ivec2(0), p.size - 1) + ivec2(0, band * p.size.y);
 		uint v = uint(energy * ws[i] * p.misc.x + 0.5);
 		if (v > 0u) {
 			imageAtomicAdd(photons, t, v);
@@ -80,11 +85,15 @@ void main() {
 		return; // decor pokes through the surface here: no light enters
 	}
 
-	float ior = p.light.w;
+	float ior0 = p.light.w;
 	vec3 Lw = p.light.xyz;
-	// Air-side sun direction that refracts to Lw through a flat surface.
-	vec2 ls_xz = Lw.xz * ior;
+	// Air-side sun direction that refracts to Lw through a flat surface (mono IOR).
+	vec2 ls_xz = Lw.xz * ior0;
 	vec3 Ls = vec3(ls_xz.x, sqrt(max(1.0 - dot(ls_xz, ls_xz), 0.0)), ls_xz.y);
+
+	int band = int(gl_GlobalInvocationID.z);
+	// Channels: 1 = mono; 3 = red, green, blue spread symmetrically around ior0.
+	float ior = p.misc.z > 1.5 ? ior0 + p.misc.y * (float(band) - 1.0) * 0.5 : ior0;
 
 	float hs = p.tank.w;
 	vec3 n = normalize(vec3(-w.y * hs, 1.0, -w.z * hs));
@@ -129,5 +138,5 @@ void main() {
 	if (any(lessThan(lc.xy, vec2(0.0))) || any(greaterThan(lc.xy, vec2(1.0)))) {
 		return; // landed on a side wall outside the footprint
 	}
-	splat(lc.xy, energy / float(p.sub * p.sub));
+	splat(lc.xy, energy / float(p.sub * p.sub), band);
 }

@@ -17,11 +17,20 @@ func _initialize() -> void:
 	body = scene.get_node("WaterBody")
 
 
-func _read(tex: Texture2DRD) -> PackedFloat32Array:
+func _read(tex: Texture2DRD, channel := 0) -> PackedFloat32Array:
 	var rd := RenderingServer.get_rendering_device()
 	if not tex.texture_rd_rid.is_valid():
 		return PackedFloat32Array()
-	return rd.texture_get_data(tex.texture_rd_rid, 0).to_float32_array()
+	var all := rd.texture_get_data(tex.texture_rd_rid, 0).to_float32_array()
+	var n := body.caustics.size.x * body.caustics.size.y
+	if all.size() == n:
+		return all
+	# RGBA32F gain: pick one channel.
+	var out := PackedFloat32Array()
+	out.resize(n)
+	for i in n:
+		out[i] = all[i * 4 + channel]
+	return out
 
 
 func _gain_stats() -> Dictionary:
