@@ -181,12 +181,13 @@ void fragment() {
 	// --- output ----------------------------------------------------------------
 	NORMAL = N;
 	ROUGHNESS = roughness;
-	// Both sides: feed our exact Fresnel to Godot as a metallic F0. The reflection
-	// is then scaled by the same F that removes energy from the transmitted part,
-	// so reflection + transmission add up to 1 (no dark band at mid angles).
-	// (Godot's dielectric path uses F0 = 0.16 * SPECULAR^2 with a Schlick curve
-	// that does not match the transmission weight used below.)
-	ALBEDO = vec3(F);
+	// Both sides: feed our exact Fresnel to Godot as a metallic F0. Godot applies
+	// its own Schlick curve on top (F0 + (1-F0)(1-cos)^5), so invert that here:
+	// the reflection then comes out at weight F, matching the (1 - F) that scales
+	// transmission, and reflection + transmission add up to 1.
+	// (Godot's dielectric path uses F0 = 0.16 * SPECULAR^2, which cannot match.)
+	float p = pow(1.0 - cos_i, 5.0);
+	ALBEDO = vec3(clamp((F - p) / max(1.0 - p, 1e-4), 0.0, 1.0));
 	METALLIC = 1.0;
 	EMISSION = refracted * (1.0 - F);
 	ALPHA = 1.0;

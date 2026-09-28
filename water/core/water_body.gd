@@ -94,6 +94,14 @@ func _ready() -> void:
 		bake_obstacles()
 
 
+func _enter_tree() -> void:
+	# Re-entering after a remove/reparent: _exit_tree released the sim and
+	# detached the volume, and _ready does not run again.
+	if is_node_ready():
+		_rebuild()
+		_attach_volume()
+
+
 func _exit_tree() -> void:
 	if sim:
 		sim.release()

@@ -43,12 +43,35 @@ var _ubo := RID()
 
 func _init() -> void:
 	effect_callback_type = EFFECT_CALLBACK_TYPE_POST_OPAQUE
-	RenderingServer.call_on_render_thread(_rt_init)
+	# Weak ref: the effect may be freed before the queued init runs.
+	RenderingServer.call_on_render_thread(_rt_init_weak.bind(weakref(self)))
 
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_PREDELETE and _rd:
-		WaterRD.free_rids(_rd, [_ubo, _sampler, _march_shader, _composite_shader])
+	if what != NOTIFICATION_PREDELETE or _rd == null:
+		return
+	# `self` is being destroyed, so any deferred work must not reference it.
+	var rids: Array[RID] = [_ubo, _sampler, _march_shader, _composite_shader]
+	if _on_render_thread():
+		WaterRD.free_rids(_rd, rids)
+	else:
+		RenderingServer.call_on_render_thread(WaterRD.free_rids.bind(_rd, rids))
+
+
+## True when RD calls made from here are already serialized with rendering:
+## either we are on the render thread, or rendering runs on the main thread
+## (the default thread model), where render-thread calls are only flushed per
+## frame and would never run during shutdown.
+static func _on_render_thread() -> bool:
+	const THREAD_MODEL_SEPARATE := 2
+	var separate: bool = ProjectSettings.get_setting("rendering/driver/threads/thread_model", 1) == THREAD_MODEL_SEPARATE
+	return not separate and OS.get_thread_caller_id() == OS.get_main_thread_id()
+
+
+static func _rt_init_weak(ref: WeakRef) -> void:
+	var effect := ref.get_ref() as WaterVolumeEffect
+	if effect:
+		effect._rt_init()
 
 
 func set_quality(downsample: int, steps: int) -> void:
