@@ -34,6 +34,9 @@ const TEMPORAL_UBO_SIZE := 4 * 64 + 16 + 16
 
 ## Multiplier on in-scattered light (1 = physical).
 @export var scatter_strength := 1.0
+## Visual density: scales sigma_a/sigma_s so a tank-sized body reads as coloured
+## water (physical ocean coefficients barely tint a <1 m path). 1 = physical.
+@export_range(0.0, 50.0, 0.1) var density_scale := 8.0
 ## How strongly the upsample rejects low-res samples at a different depth.
 @export var depth_sharpness := 40.0
 ## Weight of the current frame for a static view (lower = smoother, more lag).
@@ -266,8 +269,10 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 		var color := buffers.get_color_layer(view)
 		var depth := buffers.get_depth_layer(view)
 		var proj := scene_data.get_view_projection(view)
-		# Match the projection the depth buffer was rendered with (Vulkan: z in [0,1], reversed).
-		var proj_c := Projection.create_depth_correction(true) * proj
+		# The march needs the projection the depth buffer was rendered with (Vulkan:
+		# y flipped, z in [0,1] reversed). Newer Godot already returns it corrected
+		# (y.y < 0); applying the correction twice breaks depth and flips rays.
+		var proj_c := proj if proj.y.y < 0.0 else Projection.create_depth_correction(true) * proj
 		var inv_proj := proj_c.inverse()
 		_rd.buffer_update(_ubo, 0, UBO_SIZE, _pack_ubo(f, inv_proj, Projection(view_to_tank), low, full, god_rays))
 		if temporal:
@@ -362,8 +367,8 @@ func _pack_ubo(f: Dictionary, inv_proj: Projection, view_to_tank: Projection, lo
 			var col: Vector4 = m[c]
 			fl.append_array([col.x, col.y, col.z, col.w])
 	var tm: Vector3 = f.tank_max
-	var sa: Vector3 = f.sigma_a
-	var ss: Vector3 = f.sigma_s
+	var sa: Vector3 = f.sigma_a * density_scale
+	var ss: Vector3 = f.sigma_s * density_scale
 	var sd: Vector3 = f.sun_dir_tank
 	var si: Color = f.sun_irr
 	var am: Color = f.ambient

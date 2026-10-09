@@ -4,7 +4,7 @@ extends Resource
 ## Per-tier budgets (see docs/water_architecture.md §7). WaterBody.set_tier()
 ## swaps in a preset at runtime.
 
-enum Tier { LOW, MEDIUM, HIGH }
+enum Tier {LOW, MEDIUM, HIGH}
 
 @export var tier := Tier.MEDIUM
 
@@ -29,9 +29,9 @@ enum Tier { LOW, MEDIUM, HIGH }
 
 @export_group("Caustics")
 ## Caustic grid texels along the tank's longest horizontal axis.
-@export_range(32, 1024, 1) var caustic_resolution := 256
+@export_range(32, 1024, 1) var caustic_resolution := 456
 ## Photons per texel along each axis (n*n photons per texel).
-@export_range(1, 4, 1) var caustic_photons := 2
+@export_range(1, 4, 1) var caustic_photons := 5
 ## March steps per photon against the light-depth map.
 @export_range(1, 64, 1) var caustic_steps := 12
 ## A-trous denoise iterations.
@@ -40,11 +40,11 @@ enum Tier { LOW, MEDIUM, HIGH }
 @export var caustic_god_rays := true
 ## Trace red, green and blue photons with their own IOR (true dispersion, 3x
 ## splat cost). Off: one mono pass with dispersion faked at sampling time.
-@export var caustic_rgb := false
+@export var caustic_rgb := true
 
 @export_group("Surface")
 ## Exponential depth march for refraction (HPWater high-precision mode).
-@export var high_quality_refraction := false
+@export var high_quality_refraction := true
 
 
 static func preset(p_tier: Tier) -> WaterQuality:

@@ -163,7 +163,10 @@ void main() {
 
 		// A submerged hit was also lit through the water from above: attenuate
 		// its radiance by the depth below the surface (vertical approximation).
-		if (t_scene < t_exit) {
+		// Tolerance: surfaces lying exactly on the tank floor/walls (sand at y = 0)
+		// give t_scene ≈ t_exit, and a strict test flips per pixel with camera
+		// motion, flickering the attenuation on and off.
+		if (t_scene < t_exit + 0.01) {
 			vec3 hit = ro + rd * t_scene;
 			float d = clamp(u.tank_max.y - hit.y, 0.0, u.tank_max.y);
 			T *= exp(-sig_t * d);

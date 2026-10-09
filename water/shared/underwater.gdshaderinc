@@ -42,6 +42,10 @@ vec3 water_caustics(vec3 world_pos) {
 	}
 	// Fade in just below the surface, where the pattern has not formed yet.
 	float fade = smoothstep(0.0, 0.02, depth) * water_caustic_params.x;
+	// Fade out toward the footprint edge so the pattern doesn't cut off hard where
+	// the entry point leaves the tank (visible as a sharp line along the glass).
+	vec2 edge_m = min(uv, 1.0 - uv) * water_tank_size.xz;
+	fade *= smoothstep(0.0, 0.03, min(edge_m.x, edge_m.y));
 	return mix(vec3(1.0), g, fade);
 }
 
