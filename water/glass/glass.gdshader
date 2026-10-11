@@ -1,5 +1,6 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, specular_schlick_ggx;
+#include "res://water/shared/water_common.gdshaderinc"
 
 uniform vec3 edge_tint : source_color = vec3(0.85, 0.95, 0.9);
 uniform float roughness_val = 0.02;
@@ -16,6 +17,8 @@ uniform vec3 scattering = vec3(0.04, 0.05, 0.06);
 uniform float density_scale : hint_range(0.0, 50.0) = 8.0;
 uniform vec3 water_color : source_color = vec3(0.05, 0.32, 0.36);
 uniform float max_path = 3.0;
+// Must match water_surface.gdshader height_scale.
+uniform float wave_height_scale = 3.0;
 
 vec2 ray_box(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax) {
 	vec3 inv = 1.0 / rd;
@@ -53,9 +56,23 @@ void fragment() {
 	vec3 bg = textureLod(screen_tex, SCREEN_UV, 0.0).rgb;
 	vec3 through = bg * T + water_color * (vec3(1.0) - T);
 
+	// If the ray enters the water through its top face, the first thing seen
+	// behind the glass is the water SURFACE (a transparent pass that screen_tex
+	// doesn't contain). Act as plain clear glass there so the surface shader
+	// shows through, instead of painting the underwater tint over it.
+	// Use the live wave height at this glass point (same displacement as the
+	// surface shader) so the waterline on the pane follows the ripples exactly.
+	vec3 p_glass = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	vec3 q = water_tank_pos(p_glass);
+	vec2 wuv = clamp(water_tank_uv(q), vec2(0.002), vec2(0.998));
+	float h = water_surface_height + water_sample_wave(wuv).x * wave_height_scale;
+	float above = q.y - h;
+	float aa = max(fwidth(above), 1e-4);
+	float via_top = smoothstep(-aa, aa, above);
+
 	ALBEDO = edge_tint * F;
 	ROUGHNESS = roughness_val;
 	SPECULAR = 0.5;
-	EMISSION = through * (1.0 - F);
-	ALPHA = 1.0;
+	EMISSION = through * (1.0 - F) * (1.0 - via_top);
+	ALPHA = mix(1.0, F, via_top);
 }

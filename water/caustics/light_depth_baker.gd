@@ -2,22 +2,27 @@
 class_name LightDepthBaker
 extends RefCounted
 ## Bakes the caustic light-depth map: for every caustic texel (a point on the
-## rest surface), the distance along the refracted sun ray to the first solid.
+## rest surface), the distance along the flat-surface refracted key-light ray to
+## the first solid. Directional lights share one ray direction; for a local light
+## each texel refracts the ray coming from the light position.
 ##
 ## Design note: like ObstacleBaker, this uses physics raycasts rather than an
-## ortho SubViewport depth render. The bake runs only when the sun moves, it is
+## ortho SubViewport depth render. The bake runs only when the light moves, it is
 ## exact, and it needs no GPU readback. Decor must have collision shapes on
 ## `collision_mask` to cast caustic shadows. Rays also stop at the tank floor
 ## and walls (the AABB).
 
 
-## light_dir: tank-space unit vector toward the light, below the surface (Lw).
-static func bake(body: WaterBody, size: Vector2i, light_dir: Vector3, collision_mask: int) -> PackedFloat32Array:
+## key: WaterCaustics.light_key(): xyz = tank-space unit vector toward the light,
+## below the surface (Lw), w = 0; or xyz = local light position, w = 1.
+static func bake(body: WaterBody, size: Vector2i, key: Vector4, collision_mask: int, ior := 1.333) -> PackedFloat32Array:
 	var out := PackedFloat32Array()
 	out.resize(size.x * size.y)
 	var ts := body.tank_size
 	var surf := body.water_depth
-	var d := -light_dir
+	var local := key.w > 0.5
+	var lp := Vector3(key.x, key.y, key.z)
+	var d := -lp
 	var hx := ts.x * 0.5
 	var hz := ts.z * 0.5
 	var space := body.get_world_3d().direct_space_state if body.is_inside_tree() else null
@@ -27,13 +32,18 @@ static func bake(body: WaterBody, size: Vector2i, light_dir: Vector3, collision_
 	q.collide_with_areas = false
 	q.hit_from_inside = true
 	q.hit_back_faces = true
-	var inv := Vector3(1.0 / d.x if absf(d.x) > 1e-6 else 1e9, 1.0 / d.y, 1.0 / d.z if absf(d.z) > 1e-6 else 1e9)
 
 	for y in size.y:
 		var lz := ((y + 0.5) / size.y - 0.5) * ts.z
 		for x in size.x:
 			var lx := ((x + 0.5) / size.x - 0.5) * ts.x
 			var s := Vector3(lx, surf, lz)
+			if local:
+				# Flat-surface refraction of the ray from the light through s.
+				var i := (s - lp).normalized()
+				var t2 := Vector2(i.x, i.z) / ior
+				d = Vector3(t2.x, -sqrt(maxf(1.0 - t2.length_squared(), 1e-6)), t2.y)
+			var inv := Vector3(1.0 / d.x if absf(d.x) > 1e-6 else 1e9, 1.0 / d.y, 1.0 / d.z if absf(d.z) > 1e-6 else 1e9)
 			# Exit distance through the floor or a wall.
 			var tx := ((hx if d.x > 0.0 else -hx) - s.x) * inv.x
 			var tz := ((hz if d.z > 0.0 else -hz) - s.z) * inv.z

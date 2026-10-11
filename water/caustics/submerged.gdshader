@@ -38,7 +38,12 @@ void fragment() {
 void light() {
 	float ndl = max(dot(NORMAL, LIGHT), 0.0);
 	vec3 k = vec3(1.0);
-	if (LIGHT_IS_DIRECTIONAL) {
+	// Caustics belong to the water's key light only: the sun when it is the key
+	// light, or the tank hood light. Other lights (room fill) stay pattern-free.
+	bool key = water_light_pos.w > 0.5
+			? (!LIGHT_IS_DIRECTIONAL && water_is_key_light(v_world, (INV_VIEW_MATRIX * vec4(LIGHT, 0.0)).xyz))
+			: LIGHT_IS_DIRECTIONAL;
+	if (key) {
 		k = water_caustics(v_world);
 	}
 	DIFFUSE_LIGHT += LIGHT_COLOR * ATTENUATION * ndl * k / PI;

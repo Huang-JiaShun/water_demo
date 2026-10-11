@@ -19,8 +19,11 @@ const PHASE_G := &"water_phase_g"               # float
 const IOR := &"water_ior"                       # float
 const CAUSTIC_TEX := &"water_caustic_tex"       # sampler2D  RGBA32F gain vs calm water, per rest-surface entry point
 const LIGHT_DEPTH_TEX := &"water_light_depth_tex" # sampler2D R32F distance along the refracted sun ray to the first solid
-const LIGHT_DIR := &"water_light_dir"           # vec4       xyz = tank-space refracted dir toward the sun, w = 1 if lit
-const CAUSTIC_PARAMS := &"water_caustic_params" # vec4       x = strength, y = dispersion (IOR spread), z = 1 if true RGB, w unused
+const LIGHT_DIR := &"water_light_dir"           # vec4       xyz = tank-space refracted dir toward the sun, w = 1 if lit (either light type)
+const CAUSTIC_PARAMS := &"water_caustic_params" # vec4       x = strength, y = dispersion (IOR spread), z = 1 if true RGB, w = diffuse fill
+const CAUSTIC_BLUR := &"water_caustic_blur"     # vec4       sun: x = tan of in-water half-angle; local: x/y = bar half length/width, zw = bar axis
+const LIGHT_POS := &"water_light_pos"           # vec4       xyz = tank-space key light position, w = 1 if the key light is local
+const LIGHT_LEDS := &"water_light_leds"         # int        LEDs sampled along the bar (local key light)
 
 ## Static-ish data: textures, dimensions, optics. Call when any of them change.
 ## The parameters must already be declared in project.godot [shader_globals].
@@ -51,6 +54,10 @@ static func publish_transform(body: WaterBody) -> void:
 	if c:
 		var d := c.light_dir
 		RenderingServer.global_shader_parameter_set(LIGHT_DIR, Vector4(d.x, d.y, d.z, 1.0 if c.lit else 0.0))
+		var p := c.light_pos
+		RenderingServer.global_shader_parameter_set(LIGHT_POS, Vector4(p.x, p.y, p.z, 1.0 if c.light_local else 0.0))
 	var disp := body.optics.dispersion if body.optics else 0.0
 	var rgb := 1.0 if c and c.is_true_rgb() else 0.0
-	RenderingServer.global_shader_parameter_set(CAUSTIC_PARAMS, Vector4(body.caustic_strength, disp, rgb, 0.0))
+	RenderingServer.global_shader_parameter_set(CAUSTIC_PARAMS, Vector4(body.caustic_strength, disp, rgb, body.caustic_fill()))
+	RenderingServer.global_shader_parameter_set(CAUSTIC_BLUR, body.caustic_blur())
+	RenderingServer.global_shader_parameter_set(LIGHT_LEDS, body.tank_light_leds)

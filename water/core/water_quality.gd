@@ -61,12 +61,14 @@ static func preset(p_tier: Tier) -> WaterQuality:
 			q.caustic_steps = 6
 			q.caustic_denoise = 1
 			q.caustic_god_rays = false
+			q.caustic_rgb = false
 			q.volume_temporal = false
 		Tier.MEDIUM:
 			q.sim_resolution = 256
 			q.max_substeps = 4
 			q.volume_downsample = 2
 			q.volume_steps = 16
+			q.caustic_rgb = false
 		Tier.HIGH:
 			q.sim_resolution = 512
 			q.max_substeps = 8

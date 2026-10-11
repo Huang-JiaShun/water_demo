@@ -73,7 +73,11 @@ func configure(p_size: Vector2i, tank_size: Vector3, quality: WaterQuality) -> v
 func release() -> void:
 	if output_texture.texture_rd_rid.is_valid():
 		output_texture.texture_rd_rid = RID()
-	RenderingServer.call_on_render_thread(_rt_free)
+	# At shutdown queued render-thread calls never flush, leaking the textures.
+	if WaterVolumeEffect._on_render_thread():
+		_rt_free()
+	else:
+		RenderingServer.call_on_render_thread(_rt_free)
 
 
 ## uv in [0,1]² over the tank footprint (u = +X, v = +Z). radius and strength are in metres.

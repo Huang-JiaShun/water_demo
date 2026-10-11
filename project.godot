@@ -88,3 +88,15 @@ water_caustic_params={
 "type": "vec4",
 "value": Vector4(1, 0.01, 0, 0)
 }
+water_caustic_blur={
+"type": "vec4",
+"value": Vector4(0, 0, 1, 0)
+}
+water_light_pos={
+"type": "vec4",
+"value": Vector4(0, 1, 0, 0)
+}
+water_light_leds={
+"type": "int",
+"value": 1
+}

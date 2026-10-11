@@ -12,6 +12,8 @@
 //                   .a = 0 means the ray missed the water (nothing to reproject)
 // The composite pass does color = scene * T + inscatter.
 
+#include "../shared/water_light.glsl"
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D depth_tex;
@@ -25,10 +27,21 @@ layout(set = 0, binding = 3, std140) uniform Params {
 	vec4 sigma_a;       // xyz, w = phase g
 	vec4 sigma_s;       // xyz, w = ior
 	vec4 sun_dir;       // xyz = toward the sun in tank space (unit), w = scatter strength
-	vec4 sun_irr;       // rgb above-water irradiance, w = frame index (jitter)
+	vec4 sun_irr;       // rgb above-water irradiance (local light: colour * energy), w = frame index (jitter)
 	vec4 ambient;       // rgb above-water ambient radiance, w = step count
+	vec4 light_pos;     // xyz = tank-space key light position, w = 1: local light (else the sun)
+	vec4 light_atten;   // local light: x = 1 / range, y = attenuation exponent, z = tank units per metre
 	ivec4 sizes;        // xy = low-res size, zw = full-res size
 } u;
+
+// Godot's omni falloff (distance in metres).
+float omni_attenuation(float d, float inv_range, float decay) {
+	float nd = d * inv_range;
+	nd *= nd;
+	nd *= nd;
+	nd = max(1.0 - nd, 0.0);
+	return nd * nd * pow(max(d, 1e-4), -decay);
+}
 
 // Caustics (P3). Both are indexed by the rest-surface entry point of the
 // refracted sun ray; see water/caustics/caustics.gd.
@@ -111,6 +124,7 @@ void main() {
 		float Ft = 1.0 - (f0 + (1.0 - f0) * pow(1.0 - cos_air, 5.0));
 		vec3 sun_in = u.sun_irr.rgb * Ft;
 		float inv_cos_w = 1.0 / max(cos_w, 0.05);
+		bool local = u.light_pos.w > 0.5;
 
 		// Phase: HG (Mie) + a little Rayleigh, blended toward isotropic by the
 		// single-scatter albedo as a cheap multiple-scattering approximation.
@@ -137,13 +151,34 @@ void main() {
 
 			vec3 x = ro + rd * t;
 			float d = clamp(u.tank_max.y - x.y, 0.0, u.tank_max.y);
-			vec3 sun = sun_in * exp(-sig_t * d * inv_cos_w);
+			float dist = d * inv_cos_w;
+			vec2 e = x.xz + Lw.xz * dist;
+			vec3 sun;
+			float ph_x = ph;
+			if (local) {
+				// Hood light: per-sample entry point, direction and falloff.
+				vec3 Lx;
+				vec3 en = wl_entry_local(x, u.light_pos.xyz, u.tank_max.y, ior, Lx);
+				e = en.xy;
+				dist = en.z;
+				vec3 air = vec3(en.x, u.tank_max.y, en.y) - u.light_pos.xyz;
+				float la = length(air);
+				float ca = clamp(-air.y / max(la, 1e-5), 0.0, 1.0);
+				float Ftx = 1.0 - (f0 + (1.0 - f0) * pow(1.0 - ca, 5.0));
+				// Unfolded path length for the falloff (metres).
+				float r_m = (la + dist) / max(u.light_atten.z, 1e-5);
+				sun = u.sun_irr.rgb * Ftx * omni_attenuation(r_m, u.light_atten.x, u.light_atten.y)
+						* exp(-sig_t * dist);
+				float cx = dot(rd, Lx);
+				ph_x = mix(0.95 * hg_phase(cx, g) + 0.05 * rayleigh_phase(cx), 1.0 / (4.0 * PI),
+						clamp(a_lum, 0.0, 1.0));
+			} else {
+				sun = sun_in * exp(-sig_t * d * inv_cos_w);
+			}
 			if (u.tank_max.w > 0.5) {
 				// God rays: the caustic pattern and decor shadows carried along
-				// the sun ray. Caustics are sharpest at their focal depth, so the
+				// the light ray. Caustics are sharpest at their focal depth, so the
 				// shafts vary naturally with depth.
-				float dist = d * inv_cos_w;
-				vec2 e = x.xz + Lw.xz * dist;
 				vec2 cuv = e / (2.0 * u.tank_max.xz) + 0.5;
 				vec3 vis = vec3(1.0);
 				if (all(greaterThanEqual(cuv, vec2(0.0))) && all(lessThanEqual(cuv, vec2(1.0)))) {
@@ -153,7 +188,7 @@ void main() {
 				sun *= vis;
 			}
 			vec3 amb = u.ambient.rgb * exp(-sig_t * d);
-			vec3 S = sig_s * (sun * ph + amb) * u.sun_dir.w;
+			vec3 S = sig_s * (sun * ph_x + amb) * u.sun_dir.w;
 
 			// Analytic integral over the segment (energy-conserving for any ds).
 			vec3 Tseg = exp(-sig_t * ds);

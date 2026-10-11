@@ -4,19 +4,22 @@
 //
 // Parameterisation: every caustic / light-depth texel is a point on the rest
 // surface. A texel's "light ray" enters there and travels along the flat-surface
-// refracted sun direction d0 = -Lw. light_depth stores the distance along that
+// flat-surface refracted key-light ray (parallel for the sun, diverging from the
+// light position for a local tank light; see water_light.glsl). light_depth stores the distance along that
 // ray to the first solid (decor, floor or tank wall).
 //
 // Each photon starts on the surface, refracts through the simulated normal and
 // marches until it goes behind the light-depth map. The hit point is then
-// projected back along d0 to its entry texel, and the photon is added there. A
+// projected back along the flat-surface light ray to its entry texel, and the photon is added there. A
 // calm surface maps each photon onto its own texel, giving a uniform gain of 1.
 // Waves redistribute photons without adding energy.
 //
 // True RGB (gl_GlobalInvocationID.z = channel): each channel refracts with its
 // own IOR and splats into its own band of the photon image (rows
 // [channel * size.y, (channel + 1) * size.y)). The entry-point mapping keeps
-// using the mono Lw, so dispersion shows up as a real per-channel shift.
+// using the mono IOR, so dispersion shows up as a real per-channel shift.
+
+#include "../shared/water_light.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -31,6 +34,7 @@ layout(push_constant, std430) uniform Params {
 	vec4 light;   // xyz = Lw (toward the light, below the surface, unit), w = ior
 	vec4 tank;    // x = half size X, y = rest surface height, z = half size Z, w = wave height scale
 	vec4 misc;    // x = fixed-point energy of one photon, y = IOR spread (blue - red), z = channel count
+	vec4 lpos;    // xyz = tank-space key light position, w = 1: local light (else directional, light.xyz)
 } p;
 
 vec2 xz_to_uv(vec2 xz) {
@@ -40,10 +44,9 @@ vec2 xz_to_uv(vec2 xz) {
 // Returns the entry-point UV of q (projected back along Lw to the rest surface)
 // and, in .z, q's distance along the light ray from that entry point.
 vec3 light_coords(vec3 q) {
-	vec3 Lw = p.light.xyz;
-	float dist = (p.tank.y - q.y) / Lw.y;
-	vec2 e = q.xz + Lw.xz * dist;
-	return vec3(xz_to_uv(e), dist);
+	vec3 Lw;
+	vec3 e = wl_entry(q, p.lpos, p.light.xyz, p.tank.y, p.light.w, Lw);
+	return vec3(xz_to_uv(e.xy), e.z);
 }
 
 float depth_at(vec2 uv) {
@@ -86,10 +89,16 @@ void main() {
 	}
 
 	float ior0 = p.light.w;
-	vec3 Lw = p.light.xyz;
-	// Air-side sun direction that refracts to Lw through a flat surface (mono IOR).
-	vec2 ls_xz = Lw.xz * ior0;
-	vec3 Ls = vec3(ls_xz.x, sqrt(max(1.0 - dot(ls_xz, ls_xz), 0.0)), ls_xz.y);
+	vec3 s = vec3((uv0 - 0.5) * 2.0 * p.tank.xz, p.tank.y).xzy;
+	vec3 Ls;
+	if (p.lpos.w > 0.5) {
+		// Local light: photons diverge from the light position.
+		Ls = normalize(p.lpos.xyz - s);
+	} else {
+		// Air-side sun direction that refracts to Lw through a flat surface (mono IOR).
+		vec2 ls_xz = p.light.xz * ior0;
+		Ls = vec3(ls_xz.x, sqrt(max(1.0 - dot(ls_xz, ls_xz), 0.0)), ls_xz.y);
+	}
 
 	int band = int(gl_GlobalInvocationID.z);
 	// Channels: 1 = mono; 3 = red, green, blue spread symmetrically around ior0.
@@ -103,8 +112,6 @@ void main() {
 	}
 	// Tilted facets transmit a little more or less than the flat surface.
 	float energy = fresnel_t(dot(Ls, n), ior) / max(fresnel_t(Ls.y, ior), 1e-3);
-
-	vec3 s = vec3((uv0 - 0.5) * 2.0 * p.tank.xz, p.tank.y).xzy;
 
 	// Exit through the tank floor or a wall.
 	vec3 bmin = vec3(-p.tank.x, 0.0, -p.tank.z);
@@ -135,8 +142,13 @@ void main() {
 	}
 
 	vec3 lc = light_coords(s + d * t_hit);
+	// Photons that leave the footprint hit a glass wall, where steep underwater
+	// light is mostly reflected (TIR at the outer glass face). Mirror them back
+	// across the wall instead of dropping them, so texels near the glass keep
+	// their energy and the mean gain stays 1 right up to the edge.
+	lc.xy = 1.0 - abs(1.0 - abs(lc.xy));
 	if (any(lessThan(lc.xy, vec2(0.0))) || any(greaterThan(lc.xy, vec2(1.0)))) {
-		return; // landed on a side wall outside the footprint
+		return; // more than a full tank width away: numerically degenerate
 	}
 	splat(lc.xy, energy / float(p.sub * p.sub), band);
 }

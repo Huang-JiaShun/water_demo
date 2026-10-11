@@ -85,10 +85,14 @@ func _process(delta: float) -> void:
 		return
 	var mesh := draw_pass_1 as SphereMesh
 	var m := mesh.material as ShaderMaterial if mesh else null
-	if m and body.sun:
-		m.set_shader_parameter(&"sun_dir_world", body.sun.global_transform.basis.z.normalized())
-		m.set_shader_parameter(&"sun_color", body.sun.light_color.srgb_to_linear() * body.sun.light_energy
-				if body.sun.is_visible_in_tree() else Color.BLACK)
+	var key := body.key_light()
+	if m and key:
+		# Directional: the light shines along its -Z. Local: toward the light position.
+		var to_light := key.global_transform.basis.z.normalized() if key is DirectionalLight3D \
+				else (key.global_position - global_position).normalized()
+		m.set_shader_parameter(&"sun_dir_world", to_light)
+		m.set_shader_parameter(&"sun_color", key.light_color.srgb_to_linear() * key.light_energy
+				if key.is_visible_in_tree() else Color.BLACK)
 	if Engine.is_editor_hint() or not emitting or pop_rate <= 0.0:
 		return
 	_pop_timer += delta

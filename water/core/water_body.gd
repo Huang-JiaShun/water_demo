@@ -65,9 +65,36 @@ signal sim_texture_ready
 @export_flags_3d_physics var obstacle_mask := 1
 @export var bake_obstacles_on_ready := true
 
-@export_group("Volume")
-## Key light for in-scattering. The volume pass is attached to `environment`'s Compositor.
+@export_group("Lighting")
+## The tank's own hood light: an OmniLight3D or SpotLight3D a few cm above the
+## water, treated as an LED bar along the light node's local X axis. When set
+## and visible it is the key light for caustics, god rays and bubble glints;
+## otherwise `sun` is. Room lights that are neither stay pattern-free fill.
+@export var tank_light: Light3D:
+	set(v):
+		tank_light = v
+		_queue_publish()
+## Length of the LED bar (m), along the light's local X. Spreads the caustics into
+## layered copies that separate with depth.
+@export_range(0.0, 2.0, 0.001, "suffix:m") var tank_light_length := 0.9:
+	set(v):
+		tank_light_length = v
+		_queue_publish()
+## Width of the LED bar (m). Softens the caustics across the bar.
+@export_range(0.0, 0.3, 0.001, "suffix:m") var tank_light_width := 0.03:
+	set(v):
+		tank_light_width = v
+		_queue_publish()
+## LEDs sampled along the bar when shading caustics (cost: 2 taps per LED).
+@export_range(1, 16, 1) var tank_light_leds := 6:
+	set(v):
+		tank_light_leds = v
+		_queue_publish()
+## Optional distant light (window sun, outdoor pond). Key light when there is no tank light.
 @export var sun: DirectionalLight3D
+
+@export_group("Volume")
+## The volume pass is attached to `environment`'s Compositor.
 @export var environment: WorldEnvironment:
 	set(v):
 		_detach_volume()
@@ -88,6 +115,56 @@ signal sim_texture_ready
 	set(v):
 		caustic_strength = v
 		_queue_publish()
+## Diffuse albedo of the tank floor. Drives the pattern-free bounce light: light
+## the floor scatters upward is partly reflected back down by the underside of the
+## water surface (total internal reflection + Fresnel), lifting the caustic troughs.
+@export_range(0.0, 1.0, 0.01) var floor_albedo := 0.4:
+	set(v):
+		floor_albedo = v
+		_queue_publish()
+
+
+## Fraction of the floor's sun irradiance that arrives as uniform bounce light.
+## Floor -> surface underside -> floor is a geometric series; the bounced share
+## of the total is albedo * R_int, where R_int is the diffuse internal reflectance
+## of the water surface (total internal reflection outside the ~49° escape cone
+## plus Fresnel inside it), Egan & Hilgeman fit: ~0.47 for water.
+func caustic_fill() -> float:
+	var n := optics.ior if optics else 1.333
+	var r_int := -1.440 / (n * n) + 0.710 / n + 0.668 + 0.0636 * n
+	return clampf(floor_albedo * r_int, 0.0, 0.95)
+
+
+## Tangent of the in-water half-angle of the sun disc (refraction narrows it by ~1/n).
+func sun_half_angle_tan() -> float:
+	var deg := sun.light_angular_distance if sun else 0.5
+	var n := optics.ior if optics else 1.333
+	return tan(deg_to_rad(maxf(deg, 0.0) * 0.5) / n)
+
+
+## True when the hood light is the key light (set and visible).
+func uses_tank_light() -> bool:
+	return tank_light != null and tank_light.is_visible_in_tree()
+
+
+## The light driving caustics, god rays and glints, or null.
+func key_light() -> Light3D:
+	if uses_tank_light():
+		return tank_light
+	return sun
+
+
+## Caustic source-size parameters (water_caustic_blur global).
+## Sun: x = tan of the in-water half-angle. Hood light: x = bar half length,
+## y = bar half width (tank units), zw = bar axis in tank xz.
+func caustic_blur() -> Vector4:
+	if not uses_tank_light():
+		return Vector4(sun_half_angle_tan(), 0.0, 1.0, 0.0)
+	var axis := global_transform.affine_inverse().basis * tank_light.global_transform.basis.x
+	var a := Vector2(axis.x, axis.z)
+	a = a.normalized() if a.length_squared() > 1e-8 else Vector2(1.0, 0.0)
+	var s := global_transform.basis.get_scale()
+	return Vector4(tank_light_length * 0.5 / s.x, tank_light_width * 0.5 / s.x, a.x, a.y)
 
 var sim: WaveSim
 var volume: WaterVolumeEffect
@@ -171,8 +248,9 @@ func get_caustic_size() -> Vector2i:
 func bake_light_depth() -> void:
 	if caustics == null or not caustics.lit or not is_inside_tree():
 		return
+	var key := caustics.light_key()
 	caustics.upload_light_depth(
-			LightDepthBaker.bake(self, caustics.size, caustics.light_dir, caustic_mask), caustics.light_dir)
+			LightDepthBaker.bake(self, caustics.size, key, caustic_mask, optics.ior if optics else 1.333), key)
 
 
 func world_to_tank(p: Vector3) -> Vector3:
@@ -334,7 +412,11 @@ func _sun_dir_tank() -> Vector3:
 func _update_caustics() -> void:
 	if caustics == null or optics == null or sim == null:
 		return
-	var moved := caustics.set_light(_sun_dir_tank(), optics.ior)
+	var moved: bool
+	if uses_tank_light():
+		moved = caustics.set_local_light(world_to_tank(tank_light.global_position), water_depth)
+	else:
+		moved = caustics.set_light(_sun_dir_tank(), optics.ior)
 	if moved and _physics_ready:
 		bake_light_depth()
 	caustics.update(sim.output_texture.texture_rd_rid, tank_size, water_depth, optics.ior, caustic_height_scale,
@@ -347,7 +429,11 @@ func _update_volume() -> void:
 	volume.scatter_strength = scatter_strength
 	var to_light := Vector3.UP
 	var irr := Color.BLACK
-	if sun:
+	var local_pos: Variant = null
+	if uses_tank_light():
+		local_pos = world_to_tank(tank_light.global_position)
+		irr = tank_light.light_color.srgb_to_linear() * tank_light.light_energy
+	elif sun:
 		# Light travels along the light's -Z axis.
 		to_light = sun.global_transform.basis.z.normalized()
 		if sun.is_visible_in_tree():
@@ -361,10 +447,26 @@ func _update_volume() -> void:
 			amb = amb.lerp(Color(0.45, 0.55, 0.7), e.ambient_light_sky_contribution) * e.background_energy_multiplier
 		amb *= e.ambient_light_energy
 	volume.set_frame_data(global_transform.affine_inverse(), tank_size, water_depth,
-			optics, to_light, irr, amb)
+			optics, to_light, irr, amb, local_pos, _light_range(tank_light), _light_decay(tank_light))
 	if caustics:
 		volume.set_caustics(caustics.caustic_texture.texture_rd_rid, caustics.light_depth_texture.texture_rd_rid,
 				quality != null and quality.caustic_god_rays and caustics.lit)
+
+
+static func _light_range(l: Light3D) -> float:
+	if l is OmniLight3D:
+		return (l as OmniLight3D).omni_range
+	if l is SpotLight3D:
+		return (l as SpotLight3D).spot_range
+	return 4096.0
+
+
+static func _light_decay(l: Light3D) -> float:
+	if l is OmniLight3D:
+		return (l as OmniLight3D).omni_attenuation
+	if l is SpotLight3D:
+		return (l as SpotLight3D).spot_attenuation
+	return 1.0
 
 
 func _do_publish() -> void:

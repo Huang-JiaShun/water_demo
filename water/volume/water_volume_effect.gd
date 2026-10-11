@@ -29,7 +29,7 @@ const TEX_HIST_INS: Array[StringName] = [&"hist_ins_0", &"hist_ins_1"]
 const TEX_HIST_TRANS: Array[StringName] = [&"hist_trans_0", &"hist_trans_1"]
 const TEX_TMP_INS := &"tmp_ins"
 const TEX_TMP_TRANS := &"tmp_trans"
-const UBO_SIZE := 2 * 64 + 6 * 16 + 16
+const UBO_SIZE := 2 * 64 + 8 * 16 + 16
 const TEMPORAL_UBO_SIZE := 4 * 64 + 16 + 16
 
 ## Multiplier on in-scattered light (1 = physical).
@@ -130,8 +130,12 @@ func set_quality(downsample: int, steps: int, temporal := true, denoise := 0) ->
 
 ## world_to_tank: tank inverse transform. surface_height, tank_size: tank units.
 ## sun_dir_world: unit vector toward the sun. Colours are linear.
+## local_light: tank-space position of a local key light (then sun_irradiance is
+## its colour * energy and sun_dir_world is ignored), or null for the sun.
+## local_range / local_decay: the light's range and attenuation exponent (metres).
 func set_frame_data(world_to_tank: Transform3D, tank_size: Vector3, surface_height: float,
-		optics: WaterOptics, sun_dir_world: Vector3, sun_irradiance: Color, ambient: Color) -> void:
+		optics: WaterOptics, sun_dir_world: Vector3, sun_irradiance: Color, ambient: Color,
+		local_light: Variant = null, local_range := 4096.0, local_decay := 1.0) -> void:
 	_frame = {
 		world_to_tank = world_to_tank,
 		tank_max = Vector3(tank_size.x * 0.5, surface_height, tank_size.z * 0.5),
@@ -142,6 +146,9 @@ func set_frame_data(world_to_tank: Transform3D, tank_size: Vector3, surface_heig
 		sun_dir_tank = (world_to_tank.basis * sun_dir_world).normalized(),
 		sun_irr = sun_irradiance,
 		ambient = ambient,
+		light_pos = Vector4.ZERO if local_light == null else Vector4(local_light.x, local_light.y, local_light.z, 1.0),
+		light_atten = Vector4(1.0 / maxf(local_range, 1e-3), local_decay,
+				world_to_tank.basis.get_scale().x, 0.0),
 	}
 
 
@@ -379,6 +386,10 @@ func _pack_ubo(f: Dictionary, inv_proj: Projection, view_to_tank: Projection, lo
 	# Frame index: 0 without the temporal pass (per-frame jitter without history just shimmers).
 	fl.append_array([si.r, si.g, si.b, float(_frame_index)])
 	fl.append_array([am.r, am.g, am.b, float(_steps)])
+	var lp: Vector4 = f.light_pos
+	var la: Vector4 = f.light_atten
+	fl.append_array([lp.x, lp.y, lp.z, lp.w])
+	fl.append_array([la.x, la.y, la.z, la.w])
 	var bytes := fl.to_byte_array()
 	var ints := PackedInt32Array([low.x, low.y, full.x, full.y]).to_byte_array()
 	bytes.append_array(ints)

@@ -58,6 +58,16 @@ uniform float max_refraction_distance : hint_range(0.01, 2.0) = 0.5;
 /// It fixes "disjointed" refraction at object edges. Costs march_steps extra depth reads.
 uniform bool high_quality_refraction = false;
 uniform int march_steps : hint_range(4, 32) = 8;
+
+group_uniforms tint;
+/// Keep in sync with glass.gdshader so top and side views match.
+uniform bool tint_from_above = true;
+uniform vec3 tint_absorption = vec3(0.45, 0.07, 0.03);
+uniform vec3 tint_scattering = vec3(0.04, 0.05, 0.06);
+uniform float tint_density : hint_range(0.0, 50.0) = 8.0;
+uniform vec3 tint_water_color : source_color = vec3(0.05, 0.32, 0.36);
+uniform float tint_max_path = 3.0;
+group_uniforms refraction;
 uniform float march_thickness : hint_range(0.005, 0.5) = 0.05;
 
 varying vec3 v_tank_pos;
@@ -217,6 +227,18 @@ void fragment() {
 	// No absorption / in-scatter here: the volume CompositorEffect (POST_OPAQUE)
 	// already fogged the underwater scene this refracts (§3: one owner per effect).
 	vec3 refracted = textureLod(screen_tex, refr_uv, roughness * 6.0).rgb;
+
+	// Seen from above: same Beer-Lambert water tint as the glass panes
+	// (glass.gdshader) so top and side views read as the same water colour.
+	// Path = surface -> scene behind it along the view ray.
+	if (tint_from_above && FRONT_FACING) {
+		// Path length must come from the REFRACTED sample, not this pixel's
+		// straight-down depth, or unrefracted object silhouettes show through.
+		float refr_thick = max(scene_depth(refr_uv, INV_PROJECTION_MATRIX) - surface_depth, 0.0);
+		float path = clamp(refr_thick, 0.0, tint_max_path);
+		vec3 Tt = exp(-(tint_absorption + tint_scattering) * tint_density * path);
+		refracted = refracted * Tt + tint_water_color * (vec3(1.0) - Tt);
+	}
 
 	// --- foam ------------------------------------------------------------------
 	// A thin, broken line of trapped micro-bubbles where the water meets the
