@@ -29,7 +29,8 @@ const TEX_HIST_INS: Array[StringName] = [&"hist_ins_0", &"hist_ins_1"]
 const TEX_HIST_TRANS: Array[StringName] = [&"hist_trans_0", &"hist_trans_1"]
 const TEX_TMP_INS := &"tmp_ins"
 const TEX_TMP_TRANS := &"tmp_trans"
-const UBO_SIZE := 2 * 64 + 8 * 16 + 16
+const MAX_LIGHTS := 4
+const UBO_SIZE := 2 * 64 + 5 * 16 + 3 * MAX_LIGHTS * 16 + 16
 const TEMPORAL_UBO_SIZE := 4 * 64 + 16 + 16
 
 ## Multiplier on in-scattered light (1 = physical).
@@ -129,13 +130,29 @@ func set_quality(downsample: int, steps: int, temporal := true, denoise := 0) ->
 
 
 ## world_to_tank: tank inverse transform. surface_height, tank_size: tank units.
-## sun_dir_world: unit vector toward the sun. Colours are linear.
-## local_light: tank-space position of a local key light (then sun_irradiance is
-## its colour * energy and sun_dir_world is ignored), or null for the sun.
-## local_range / local_decay: the light's range and attenuation exponent (metres).
+## lights: key lights in caustic layer order (at most MAX_LIGHTS), each
+##   {local = false, dir = Vector3 (tank space, toward the sun), color = Color} or
+##   {local = true, pos = Vector3 (tank space), color, range = m, decay = exponent}.
+## color is linear colour * energy. ambient: linear.
 func set_frame_data(world_to_tank: Transform3D, tank_size: Vector3, surface_height: float,
-		optics: WaterOptics, sun_dir_world: Vector3, sun_irradiance: Color, ambient: Color,
-		local_light: Variant = null, local_range := 4096.0, local_decay := 1.0) -> void:
+		optics: WaterOptics, lights: Array, ambient: Color) -> void:
+	var units := world_to_tank.basis.get_scale().x
+	var lv: Array[Vector4] = []
+	var cv: Array[Vector4] = []
+	var av: Array[Vector4] = []
+	for l: Dictionary in lights:
+		if lv.size() >= MAX_LIGHTS:
+			break
+		var c: Color = l.color
+		cv.append(Vector4(c.r, c.g, c.b, 0.0))
+		if l.local:
+			var p: Vector3 = l.pos
+			lv.append(Vector4(p.x, p.y, p.z, 1.0))
+			av.append(Vector4(1.0 / maxf(l.range, 1e-3), l.decay, units, 0.0))
+		else:
+			var d: Vector3 = (l.dir as Vector3).normalized()
+			lv.append(Vector4(d.x, d.y, d.z, 0.0))
+			av.append(Vector4.ZERO)
 	_frame = {
 		world_to_tank = world_to_tank,
 		tank_max = Vector3(tank_size.x * 0.5, surface_height, tank_size.z * 0.5),
@@ -143,12 +160,10 @@ func set_frame_data(world_to_tank: Transform3D, tank_size: Vector3, surface_heig
 		sigma_s = optics.scattering,
 		g = optics.phase_g,
 		ior = optics.ior,
-		sun_dir_tank = (world_to_tank.basis * sun_dir_world).normalized(),
-		sun_irr = sun_irradiance,
 		ambient = ambient,
-		light_pos = Vector4.ZERO if local_light == null else Vector4(local_light.x, local_light.y, local_light.z, 1.0),
-		light_atten = Vector4(1.0 / maxf(local_range, 1e-3), local_decay,
-				world_to_tank.basis.get_scale().x, 0.0),
+		lights = lv,
+		colors = cv,
+		attens = av,
 	}
 
 
@@ -376,20 +391,18 @@ func _pack_ubo(f: Dictionary, inv_proj: Projection, view_to_tank: Projection, lo
 	var tm: Vector3 = f.tank_max
 	var sa: Vector3 = f.sigma_a * density_scale
 	var ss: Vector3 = f.sigma_s * density_scale
-	var sd: Vector3 = f.sun_dir_tank
-	var si: Color = f.sun_irr
 	var am: Color = f.ambient
+	var lv: Array[Vector4] = f.lights
 	fl.append_array([tm.x, tm.y, tm.z, 1.0 if god_rays else 0.0])
 	fl.append_array([sa.x, sa.y, sa.z, f.g])
 	fl.append_array([ss.x, ss.y, ss.z, f.ior])
-	fl.append_array([sd.x, sd.y, sd.z, scatter_strength])
 	# Frame index: 0 without the temporal pass (per-frame jitter without history just shimmers).
-	fl.append_array([si.r, si.g, si.b, float(_frame_index)])
-	fl.append_array([am.r, am.g, am.b, float(_steps)])
-	var lp: Vector4 = f.light_pos
-	var la: Vector4 = f.light_atten
-	fl.append_array([lp.x, lp.y, lp.z, lp.w])
-	fl.append_array([la.x, la.y, la.z, la.w])
+	fl.append_array([scatter_strength, float(_frame_index), float(_steps), float(lv.size())])
+	fl.append_array([am.r, am.g, am.b, 0.0])
+	for arr: Array[Vector4] in [f.lights, f.colors, f.attens]:
+		for i in MAX_LIGHTS:
+			var v: Vector4 = arr[i] if i < arr.size() else Vector4.ZERO
+			fl.append_array([v.x, v.y, v.z, v.w])
 	var bytes := fl.to_byte_array()
 	var ints := PackedInt32Array([low.x, low.y, full.x, full.y]).to_byte_array()
 	bytes.append_array(ints)

@@ -66,31 +66,36 @@ signal sim_texture_ready
 @export var bake_obstacles_on_ready := true
 
 @export_group("Lighting")
-## The tank's own hood light: an OmniLight3D or SpotLight3D a few cm above the
-## water, treated as an LED bar along the light node's local X axis. When set
-## and visible it is the key light for caustics, god rays and bubble glints;
-## otherwise `sun` is. Room lights that are neither stay pattern-free fill.
-@export var tank_light: Light3D:
+## The tank's own lights: OmniLight3D / SpotLight3D a few cm above the water
+## (hood LED bars, spot pendants). Each visible one above the surface is a key
+## light for caustics, god rays and bubble glints (at most
+## WaterCaustics.MAX_LIGHTS, including `sun`). Room lights not listed stay
+## pattern-free fill.
+## Each light is an LED bar along its local X. Per-light overrides via node
+## metadata: "led_length" (m), "led_width" (m), "leds" (int); otherwise the
+## defaults below. led_length 0 = a point light (single LED).
+@export var tank_lights: Array[Light3D] = []:
 	set(v):
-		tank_light = v
+		tank_lights = v
 		_queue_publish()
-## Length of the LED bar (m), along the light's local X. Spreads the caustics into
+## Default LED bar length (m), along the light's local X. Spreads the caustics into
 ## layered copies that separate with depth.
 @export_range(0.0, 2.0, 0.001, "suffix:m") var tank_light_length := 0.9:
 	set(v):
 		tank_light_length = v
 		_queue_publish()
-## Width of the LED bar (m). Softens the caustics across the bar.
+## Default LED bar width (m). Softens the caustics across the bar.
 @export_range(0.0, 0.3, 0.001, "suffix:m") var tank_light_width := 0.03:
 	set(v):
 		tank_light_width = v
 		_queue_publish()
-## LEDs sampled along the bar when shading caustics (cost: 2 taps per LED).
+## Default LEDs sampled along the bar when shading caustics (cost: 2 taps per LED).
 @export_range(1, 16, 1) var tank_light_leds := 6:
 	set(v):
 		tank_light_leds = v
 		_queue_publish()
-## Optional distant light (window sun, outdoor pond). Key light when there is no tank light.
+## Optional distant light (window sun, outdoor pond). A key light when visible,
+## alongside the tank lights.
 @export var sun: DirectionalLight3D
 
 @export_group("Volume")
@@ -142,29 +147,47 @@ func sun_half_angle_tan() -> float:
 	return tan(deg_to_rad(maxf(deg, 0.0) * 0.5) / n)
 
 
-## True when the hood light is the key light (set and visible).
-func uses_tank_light() -> bool:
-	return tank_light != null and tank_light.is_visible_in_tree()
+## The key lights in use this frame, in caustic layer order. Each entry:
+## {light, local, pos (tank, local) / dir (tank, toward the sun), shape: Vector4, leds: int}.
+## shape: sun x = tan of the in-water half-angle; local x/y = bar half length/width
+## (tank units), zw = bar axis (tank xz). Lights that cannot reach the water are
+## skipped (local below the surface, sun below the horizon).
+func key_light_info() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var inv := global_transform.affine_inverse()
+	var sc := global_transform.basis.get_scale().x
+	for l in tank_lights:
+		if out.size() >= WaterCaustics.MAX_LIGHTS:
+			return out
+		if l == null or not l.is_visible_in_tree():
+			continue
+		var p := inv * l.global_position
+		if p.y <= water_depth + 1e-3:
+			continue
+		var axis := inv.basis * l.global_transform.basis.x
+		var a := Vector2(axis.x, axis.z)
+		a = a.normalized() if a.length_squared() > 1e-8 else Vector2(1.0, 0.0)
+		var length: float = l.get_meta(&"led_length", tank_light_length)
+		var width: float = l.get_meta(&"led_width", tank_light_width)
+		var leds: int = l.get_meta(&"leds", tank_light_leds) if length > 0.0 else 1
+		out.append({light = l, local = true, pos = p,
+				shape = Vector4(length * 0.5 / sc, width * 0.5 / sc, a.x, a.y), leds = leds})
+	if sun and sun.is_visible_in_tree() and out.size() < WaterCaustics.MAX_LIGHTS:
+		var d := (inv.basis * sun.global_transform.basis.z).normalized()
+		if d.y > 1e-3:
+			out.append({light = sun, local = false, dir = d,
+					shape = Vector4(sun_half_angle_tan(), 0.0, 1.0, 0.0), leds = 1})
+	return out
 
 
-## The light driving caustics, god rays and glints, or null.
+## The brightest key light, or null (bubble glints use a single light).
 func key_light() -> Light3D:
-	if uses_tank_light():
-		return tank_light
-	return sun
-
-
-## Caustic source-size parameters (water_caustic_blur global).
-## Sun: x = tan of the in-water half-angle. Hood light: x = bar half length,
-## y = bar half width (tank units), zw = bar axis in tank xz.
-func caustic_blur() -> Vector4:
-	if not uses_tank_light():
-		return Vector4(sun_half_angle_tan(), 0.0, 1.0, 0.0)
-	var axis := global_transform.affine_inverse().basis * tank_light.global_transform.basis.x
-	var a := Vector2(axis.x, axis.z)
-	a = a.normalized() if a.length_squared() > 1e-8 else Vector2(1.0, 0.0)
-	var s := global_transform.basis.get_scale()
-	return Vector4(tank_light_length * 0.5 / s.x, tank_light_width * 0.5 / s.x, a.x, a.y)
+	var best: Light3D = null
+	for k in key_light_info():
+		var l: Light3D = k.light
+		if best == null or l.light_energy > best.light_energy:
+			best = l
+	return best
 
 var sim: WaveSim
 var volume: WaterVolumeEffect
@@ -245,13 +268,15 @@ func get_caustic_size() -> Vector2i:
 
 
 ## Forces a light-depth re-bake (call after moving decor).
-func bake_light_depth() -> void:
+func bake_light_depth(layers := PackedInt32Array()) -> void:
 	if caustics == null or not caustics.lit or not is_inside_tree():
 		return
-	var key := caustics.light_key()
-	caustics.upload_light_depth(
-			LightDepthBaker.bake(self, caustics.size, key, caustic_mask, optics.ior if optics else 1.333), key)
-
+	if layers.is_empty():
+		layers = PackedInt32Array(range(caustics.light_count()))
+	for i in layers:
+		var key := caustics.light_keys[i]
+		caustics.upload_light_depth(i,
+				LightDepthBaker.bake(self, caustics.size, key, caustic_mask, optics.ior if optics else 1.333), key)
 
 func world_to_tank(p: Vector3) -> Vector3:
 	return global_transform.affine_inverse() * p
@@ -336,7 +361,7 @@ func _rebuild() -> void:
 	if volume:
 		_apply_volume_quality()
 	_apply_surface_quality()
-	# configure() reset the obstacle mask; light depth re-bakes via set_light().
+	# configure() reset the obstacle mask; light depth re-bakes via set_lights().
 	if _physics_ready and bake_obstacles_on_ready:
 		bake_obstacles()
 	_do_publish()
@@ -403,22 +428,12 @@ func _detach_volume() -> void:
 		comp.compositor_effects = effects
 
 
-func _sun_dir_tank() -> Vector3:
-	if sun == null or not sun.is_visible_in_tree():
-		return Vector3.DOWN
-	return (global_transform.affine_inverse().basis * sun.global_transform.basis.z).normalized()
-
-
 func _update_caustics() -> void:
 	if caustics == null or optics == null or sim == null:
 		return
-	var moved: bool
-	if uses_tank_light():
-		moved = caustics.set_local_light(world_to_tank(tank_light.global_position), water_depth)
-	else:
-		moved = caustics.set_light(_sun_dir_tank(), optics.ior)
-	if moved and _physics_ready:
-		bake_light_depth()
+	var stale := caustics.set_lights(key_light_info(), water_depth, optics.ior)
+	if not stale.is_empty() and _physics_ready:
+		bake_light_depth(stale)
 	caustics.update(sim.output_texture.texture_rd_rid, tank_size, water_depth, optics.ior, caustic_height_scale,
 			optics.dispersion)
 
@@ -427,17 +442,17 @@ func _update_volume() -> void:
 	if volume == null or optics == null:
 		return
 	volume.scatter_strength = scatter_strength
-	var to_light := Vector3.UP
-	var irr := Color.BLACK
-	var local_pos: Variant = null
-	if uses_tank_light():
-		local_pos = world_to_tank(tank_light.global_position)
-		irr = tank_light.light_color.srgb_to_linear() * tank_light.light_energy
-	elif sun:
-		# Light travels along the light's -Z axis.
-		to_light = sun.global_transform.basis.z.normalized()
-		if sun.is_visible_in_tree():
-			irr = sun.light_color.srgb_to_linear() * sun.light_energy
+	var lights: Array[Dictionary] = []
+	for k in key_light_info():
+		var l: Light3D = k.light
+		var e := {local = k.local, color = l.light_color.srgb_to_linear() * l.light_energy}
+		if k.local:
+			e.pos = k.pos
+			e.range = _light_range(l)
+			e.decay = _light_decay(l)
+		else:
+			e.dir = k.dir
+		lights.append(e)
 	var amb := Color(0.3, 0.3, 0.3)
 	if environment and environment.environment:
 		var e := environment.environment
@@ -446,8 +461,7 @@ func _update_volume() -> void:
 			# No cheap CPU-side sky irradiance: use a neutral daylight sky estimate.
 			amb = amb.lerp(Color(0.45, 0.55, 0.7), e.ambient_light_sky_contribution) * e.background_energy_multiplier
 		amb *= e.ambient_light_energy
-	volume.set_frame_data(global_transform.affine_inverse(), tank_size, water_depth,
-			optics, to_light, irr, amb, local_pos, _light_range(tank_light), _light_decay(tank_light))
+	volume.set_frame_data(global_transform.affine_inverse(), tank_size, water_depth, optics, lights, amb)
 	if caustics:
 		volume.set_caustics(caustics.caustic_texture.texture_rd_rid, caustics.light_depth_texture.texture_rd_rid,
 				quality != null and quality.caustic_god_rays and caustics.lit)

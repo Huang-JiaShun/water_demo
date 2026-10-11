@@ -167,6 +167,14 @@ size = Vector3(0.9, 0.002, 0.03)
 shading_mode = 0
 albedo_color = Color(1, 0.97, 0.92, 1)
 
+[sub_resource type="SphereMesh" id="PendantMesh"]
+radius = 0.02
+height = 0.04
+
+[sub_resource type="StandardMaterial3D" id="PendantMat"]
+shading_mode = 0
+albedo_color = Color(0.75, 0.85, 1, 1)
+
 [node name="AquariumDemo" type="Node3D" unique_id=926204014]
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=872911564]
@@ -204,12 +212,12 @@ fov = 55.0
 transform = Transform3D(1, 0, 0, 0, 0.984808, -0.173648, 0, 0.173648, 0.984808, 0, 0.2, 0.75)
 fov = 60.0
 
-[node name="WaterBody" type="Node3D" parent="." unique_id=1286888735 node_paths=PackedStringArray("surface", "tank_light", "sun", "environment")]
+[node name="WaterBody" type="Node3D" parent="." unique_id=1286888735 node_paths=PackedStringArray("surface", "tank_lights", "sun", "environment")]
 script = ExtResource("1_body")
 optics = SubResource("Resource_y140w")
 quality = SubResource("Resource_t3gwv")
 surface = NodePath("Surface")
-tank_light = NodePath("Hood/TankLight")
+tank_lights = [NodePath("Hood/TankLight"), NodePath("Pendant/PendantLight")]
 sun = NodePath("../DirectionalLight3D")
 environment = NodePath("../WorldEnvironment")
 
@@ -296,6 +304,26 @@ spot_range = 2.5
 spot_attenuation = 0.6
 spot_angle = 82.0
 spot_angle_attenuation = 0.4
+
+[node name="Pendant" type="MeshInstance3D" parent="WaterBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.3, 0.75, 0.08)
+cast_shadow = 0
+mesh = SubResource("PendantMesh")
+surface_material_override/0 = SubResource("PendantMat")
+
+[node name="PendantLight" type="SpotLight3D" parent="WaterBody/Pendant"]
+transform = Transform3D(1, 0, 0, 0, 0, -1, 0, 1, 0, 0, -0.02, 0)
+light_color = Color(0.75, 0.85, 1, 1)
+light_energy = 1.5
+light_size = 0.01
+shadow_enabled = true
+shadow_bias = 0.02
+shadow_normal_bias = 0.5
+spot_range = 2.0
+spot_attenuation = 0.8
+spot_angle = 45.0
+spot_angle_attenuation = 0.6
+metadata/led_length = 0.0
 
 [node name="Disturber" type="Node" parent="." unique_id=2138515254 node_paths=PackedStringArray("body")]
 script = ExtResource("2_dist")

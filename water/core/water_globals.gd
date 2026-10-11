@@ -19,11 +19,11 @@ const PHASE_G := &"water_phase_g"               # float
 const IOR := &"water_ior"                       # float
 const CAUSTIC_TEX := &"water_caustic_tex"       # sampler2D  RGBA32F gain vs calm water, per rest-surface entry point
 const LIGHT_DEPTH_TEX := &"water_light_depth_tex" # sampler2D R32F distance along the refracted sun ray to the first solid
-const LIGHT_DIR := &"water_light_dir"           # vec4       xyz = tank-space refracted dir toward the sun, w = 1 if lit (either light type)
 const CAUSTIC_PARAMS := &"water_caustic_params" # vec4       x = strength, y = dispersion (IOR spread), z = 1 if true RGB, w = diffuse fill
-const CAUSTIC_BLUR := &"water_caustic_blur"     # vec4       sun: x = tan of in-water half-angle; local: x/y = bar half length/width, zw = bar axis
-const LIGHT_POS := &"water_light_pos"           # vec4       xyz = tank-space key light position, w = 1 if the key light is local
-const LIGHT_LEDS := &"water_light_leds"         # int        LEDs sampled along the bar (local key light)
+const LIGHT_COUNT := &"water_light_count"       # int        key lights in use (<= WaterCaustics.MAX_LIGHTS)
+const LIGHTS := &"water_lights"                 # mat4       column i: sun: refracted tank dir toward it, w = 0; local: tank pos, w = 1
+const LIGHT_SHAPES := &"water_light_shapes"     # mat4       column i: sun: x = tan of in-water half-angle; local: x/y = bar half length/width, zw = bar axis
+const LIGHT_LEDS := &"water_light_leds"         # vec4       per light: LEDs sampled along the bar
 
 ## Static-ish data: textures, dimensions, optics. Call when any of them change.
 ## The parameters must already be declared in project.godot [shader_globals].
@@ -51,13 +51,21 @@ static func publish_transform(body: WaterBody) -> void:
 	RenderingServer.global_shader_parameter_set(
 			WORLD_TO_TANK, Projection(body.global_transform.affine_inverse()))
 	var c := body.caustics
+	var lights := Projection(Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0))
+	var shapes := Projection(Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0))
+	var leds := Vector4.ONE
+	var count := 0
 	if c:
-		var d := c.light_dir
-		RenderingServer.global_shader_parameter_set(LIGHT_DIR, Vector4(d.x, d.y, d.z, 1.0 if c.lit else 0.0))
-		var p := c.light_pos
-		RenderingServer.global_shader_parameter_set(LIGHT_POS, Vector4(p.x, p.y, p.z, 1.0 if c.light_local else 0.0))
+		count = c.light_count()
+		var info := body.key_light_info()
+		for i in count:
+			lights[i] = c.light_keys[i]
+			shapes[i] = info[i].shape
+			leds[i] = info[i].leds
+	RenderingServer.global_shader_parameter_set(LIGHT_COUNT, count)
+	RenderingServer.global_shader_parameter_set(LIGHTS, lights)
+	RenderingServer.global_shader_parameter_set(LIGHT_SHAPES, shapes)
+	RenderingServer.global_shader_parameter_set(LIGHT_LEDS, leds)
 	var disp := body.optics.dispersion if body.optics else 0.0
 	var rgb := 1.0 if c and c.is_true_rgb() else 0.0
 	RenderingServer.global_shader_parameter_set(CAUSTIC_PARAMS, Vector4(body.caustic_strength, disp, rgb, body.caustic_fill()))
-	RenderingServer.global_shader_parameter_set(CAUSTIC_BLUR, body.caustic_blur())
-	RenderingServer.global_shader_parameter_set(LIGHT_LEDS, body.tank_light_leds)

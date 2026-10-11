@@ -80,23 +80,23 @@ water_light_depth_tex={
 "type": "sampler2D",
 "value": ""
 }
-water_light_dir={
-"type": "vec4",
-"value": Vector4(0, 1, 0, 0)
-}
 water_caustic_params={
 "type": "vec4",
 "value": Vector4(1, 0.01, 0, 0)
 }
-water_caustic_blur={
-"type": "vec4",
-"value": Vector4(0, 0, 1, 0)
+water_light_count={
+"type": "int",
+"value": 0
 }
-water_light_pos={
-"type": "vec4",
-"value": Vector4(0, 1, 0, 0)
+water_lights={
+"type": "mat4",
+"value": Projection(0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0)
+}
+water_light_shapes={
+"type": "mat4",
+"value": Projection(0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0)
 }
 water_light_leds={
-"type": "int",
-"value": 1
+"type": "vec4",
+"value": Vector4(1, 1, 1, 1)
 }

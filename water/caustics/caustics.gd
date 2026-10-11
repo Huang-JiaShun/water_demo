@@ -12,8 +12,11 @@ extends RefCounted
 ##     water (1 = flat). Mono mode writes the same gain to r, g and b; true-RGB
 ##     mode traces each channel with its own IOR (quality.caustic_rgb).
 ##
-## Key light: a directional sun (all rays share one refracted direction Lw) or a
-## local tank light at light_pos (rays diverge from it). A point q underwater maps
+## Lights: up to MAX_LIGHTS key lights, each a directional sun (all rays share one
+## refracted direction Lw) or a local tank light (rays diverge from its position).
+## Every light has its own layer in both textures, stacked vertically: layer i
+## covers rows [i * size.y, (i + 1) * size.y). The textures always hold MAX_LIGHTS
+## layers; only the first light_count() are valid. A point q underwater maps
 ## to its entry texel with wl_entry() in water/shared/water_light.glsl:
 ##   directional: dist = (surface - q.y) / Lw.y,  entry = q.xz + Lw.xz * dist
 ##   local:       exact Snell inverse from light_pos to q (Newton, 3 iterations)
@@ -28,25 +31,28 @@ const DENOISE_SHADER := "res://water/caustics/caustic_denoise.glsl"
 const LOCAL_SIZE := 8
 ## Fixed-point energy of one flat-surface texel. Headroom: ~2^32 / 4096 = 1M x gain.
 const FIXED_POINT := 4096.0
+const MAX_LIGHTS := 4
 
 var caustic_texture := Texture2DRD.new()
 var light_depth_texture := Texture2DRD.new()
 
+## Size of one light layer.
 var size := Vector2i.ZERO
-## Tank-space unit vector toward the light, below the surface (refracted). Valid
-## when `lit` and not `light_local`. For a local light: the direction straight below it.
-var light_dir := Vector3.UP
-## Tank-space position of a local key light (valid when light_local).
-var light_pos := Vector3.ZERO
-var light_local := false
+## Per light: xyz = refracted tank-space direction toward a sun (below the surface)
+## with w = 0, or a local light's tank-space position with w = 1.
+var light_keys: Array[Vector4] = []
+## True when at least one light reaches the water.
 var lit := false
+## First light's refracted direction (UP for a local light).
+var light_dir := Vector3.UP
 
 var _photons_per_axis := 2
 var _march_steps := 16
 var _denoise_iterations := 2
 var _channels := 1
 var _generation := 0
-var _baked_key := Vector4.ZERO
+var _baked_keys: Array[Vector4] = []
+var _depth_cpu := PackedFloat32Array()
 
 # --- render thread state ----------------------------------------------------
 var _rd: RenderingDevice
@@ -67,7 +73,10 @@ func configure(p_size: Vector2i, quality: WaterQuality) -> void:
 	_march_steps = quality.caustic_steps
 	_denoise_iterations = quality.caustic_denoise
 	_channels = 3 if quality.caustic_rgb else 1
-	_baked_key = Vector4.ZERO
+	_baked_keys.clear()
+	_depth_cpu = PackedFloat32Array()
+	_depth_cpu.resize(size.x * size.y * MAX_LIGHTS)
+	_depth_cpu.fill(1e3)
 	_generation += 1
 	RenderingServer.call_on_render_thread(_rt_init.bind(size, _channels, _generation))
 
@@ -82,47 +91,61 @@ func release() -> void:
 		RenderingServer.call_on_render_thread(_rt_free)
 
 
-## Directional key light. to_light_tank: unit vector toward the sun in tank space
-## (above the water). Returns true when the light moved enough that light depth
-## must be re-baked.
-func set_light(to_light_tank: Vector3, ior: float) -> bool:
-	light_local = false
-	lit = to_light_tank.y > 1e-3
-	if not lit:
-		return false
-	var eta := 1.0 / ior
-	var t := Vector2(to_light_tank.x, to_light_tank.z) * eta
-	light_dir = Vector3(t.x, sqrt(maxf(1.0 - t.length_squared(), 0.0)), t.y).normalized()
-	# ~0.25 degrees.
-	return _baked_key.w != 0.0 or Vector3(_baked_key.x, _baked_key.y, _baked_key.z).dot(light_dir) < 0.99999
-
-
-## Local key light (tank hood). pos_tank: light position in tank space; it must be
-## above the rest surface (surface_height) to light the water. Returns true when
-## light depth must be re-baked (moved by more than 1 mm).
-func set_local_light(pos_tank: Vector3, surface_height: float) -> bool:
-	light_local = true
-	light_pos = pos_tank
+## Sets the key lights for this frame. Each entry: {local = true, pos = Vector3}
+## (tank-space light position) or {local = false, dir = Vector3} (tank-space unit
+## vector toward the sun). Lights that cannot reach the water are dropped; at most
+## MAX_LIGHTS are kept. Returns the layers whose light depth must be re-baked
+## (local light moved > 1 mm, sun turned > ~0.25 degrees).
+func set_lights(lights: Array, surface_height: float, ior: float) -> PackedInt32Array:
+	light_keys.clear()
+	for l: Dictionary in lights:
+		if light_keys.size() >= MAX_LIGHTS:
+			break
+		if l.local:
+			var p: Vector3 = l.pos
+			if p.y > surface_height + 1e-3:
+				light_keys.append(Vector4(p.x, p.y, p.z, 1.0))
+		else:
+			var d: Vector3 = l.dir
+			if d.y > 1e-3:
+				var t := Vector2(d.x, d.z) / ior
+				var lw := Vector3(t.x, sqrt(maxf(1.0 - t.length_squared(), 0.0)), t.y).normalized()
+				light_keys.append(Vector4(lw.x, lw.y, lw.z, 0.0))
+	lit = not light_keys.is_empty()
 	light_dir = Vector3.UP
-	lit = pos_tank.y > surface_height + 1e-3
-	if not lit:
+	if lit and light_keys[0].w == 0.0:
+		light_dir = Vector3(light_keys[0].x, light_keys[0].y, light_keys[0].z)
+	var stale := PackedInt32Array()
+	for k in light_keys.size():
+		if k >= _baked_keys.size() or not _same_key(_baked_keys[k], light_keys[k]):
+			stale.append(k)
+	return stale
+
+
+static func _same_key(a: Vector4, b: Vector4) -> bool:
+	if a.w != b.w:
 		return false
-	return _baked_key.w != 1.0 or Vector3(_baked_key.x, _baked_key.y, _baked_key.z).distance_to(pos_tank) > 1e-3
+	var va := Vector3(a.x, a.y, a.z)
+	var vb := Vector3(b.x, b.y, b.z)
+	return va.distance_to(vb) <= 1e-3 if b.w > 0.5 else va.dot(vb) >= 0.99999
 
 
-## Light key for the current light: xyz = dir or position, w = 1 if local.
-func light_key() -> Vector4:
-	var v := light_pos if light_local else light_dir
-	return Vector4(v.x, v.y, v.z, 1.0 if light_local else 0.0)
+func light_count() -> int:
+	return light_keys.size()
 
 
-## Uploads a baked light-depth map (PackedFloat32Array, size.x * size.y) baked for
-## light_key().
-func upload_light_depth(depths: PackedFloat32Array, for_key: Vector4) -> void:
-	if depths.size() != size.x * size.y:
+## Uploads a baked light-depth layer (PackedFloat32Array, size.x * size.y) baked
+## for for_key (light_keys[layer]).
+func upload_light_depth(layer: int, depths: PackedFloat32Array, for_key: Vector4) -> void:
+	if depths.size() != size.x * size.y or layer < 0 or layer >= MAX_LIGHTS:
 		return
-	_baked_key = for_key
-	RenderingServer.call_on_render_thread(_rt_upload_depth.bind(depths.to_byte_array()))
+	while _baked_keys.size() <= layer:
+		_baked_keys.append(Vector4(0, 0, 0, -1))
+	_baked_keys[layer] = for_key
+	var n := size.x * size.y
+	for t in n:
+		_depth_cpu[layer * n + t] = depths[t]
+	RenderingServer.call_on_render_thread(_rt_upload_depth.bind(_depth_cpu.to_byte_array()))
 
 
 ## True when the caustic texture holds real per-channel dispersion.
@@ -136,15 +159,19 @@ func update(wave_rid: RID, tank_size: Vector3, surface_height: float, ior: float
 		dispersion := 0.0) -> void:
 	if size == Vector2i.ZERO:
 		return
-	var pc := WaterRD.push_constant(
-			PackedInt32Array([size.x, size.y, _photons_per_axis, _march_steps]),
-			PackedFloat32Array([
-				light_dir.x, light_dir.y, light_dir.z, ior,
-				tank_size.x * 0.5, surface_height, tank_size.z * 0.5, height_scale,
-				FIXED_POINT, dispersion, float(_channels), 0.0,
-				light_pos.x, light_pos.y, light_pos.z, 1.0 if light_local else 0.0,
-			]))
-	RenderingServer.call_on_render_thread(_rt_update.bind(wave_rid, pc, lit))
+	var pcs: Array[PackedByteArray] = []
+	for k in light_keys.size():
+		var key := light_keys[k]
+		var local := key.w > 0.5
+		pcs.append(WaterRD.push_constant(
+				PackedInt32Array([size.x, size.y, _photons_per_axis, _march_steps]),
+				PackedFloat32Array([
+					0.0 if local else key.x, 1.0 if local else key.y, 0.0 if local else key.z, ior,
+					tank_size.x * 0.5, surface_height, tank_size.z * 0.5, height_scale,
+					FIXED_POINT, dispersion, float(_channels), float(k),
+					key.x if local else 0.0, key.y if local else 1.0, key.z if local else 0.0, 1.0 if local else 0.0,
+				])))
+	RenderingServer.call_on_render_thread(_rt_update.bind(wave_rid, pcs))
 
 
 func _publish(caustic: RID, depth: RID, generation: int) -> void:
@@ -179,19 +206,20 @@ func _rt_init(p_size: Vector2i, channels: int, generation: int) -> void:
 	_sampler = _rd.sampler_create(ss)
 
 	var RD := RenderingDevice
-	_photons = _rd.texture_create(WaterRD.texture_format(Vector2i(p_size.x, p_size.y * channels), RD.DATA_FORMAT_R32_UINT,
+	var stacked := Vector2i(p_size.x, p_size.y * MAX_LIGHTS)
+	_photons = _rd.texture_create(WaterRD.texture_format(Vector2i(p_size.x, p_size.y * channels * MAX_LIGHTS), RD.DATA_FORMAT_R32_UINT,
 			RD.TEXTURE_USAGE_STORAGE_BIT | RD.TEXTURE_USAGE_CAN_COPY_TO_BIT), RDTextureView.new())
 	_rd.texture_clear(_photons, Color(0, 0, 0, 0), 0, 1, 0, 1)
 
 	var f32 := RD.TEXTURE_USAGE_STORAGE_BIT | RD.TEXTURE_USAGE_SAMPLING_BIT \
 			| RD.TEXTURE_USAGE_CAN_COPY_TO_BIT | RD.TEXTURE_USAGE_CAN_COPY_FROM_BIT
 	for i in 2:
-		_gain[i] = _rd.texture_create(WaterRD.texture_format(p_size, RD.DATA_FORMAT_R32G32B32A32_SFLOAT, f32), RDTextureView.new())
+		_gain[i] = _rd.texture_create(WaterRD.texture_format(stacked, RD.DATA_FORMAT_R32G32B32A32_SFLOAT, f32), RDTextureView.new())
 		_rd.texture_clear(_gain[i], Color(1, 1, 1, 1), 0, 1, 0, 1)
 	var far := PackedFloat32Array()
-	far.resize(p_size.x * p_size.y)
+	far.resize(stacked.x * stacked.y)
 	far.fill(1e3) # nothing blocks the light until the first bake
-	_depth = _rd.texture_create(WaterRD.texture_format(p_size, RD.DATA_FORMAT_R32_SFLOAT,
+	_depth = _rd.texture_create(WaterRD.texture_format(stacked, RD.DATA_FORMAT_R32_SFLOAT,
 			f32 | RD.TEXTURE_USAGE_CAN_UPDATE_BIT), RDTextureView.new(), [far.to_byte_array()])
 
 	_publish.call_deferred(_gain[0], _depth, generation)
@@ -202,10 +230,10 @@ func _rt_upload_depth(data: PackedByteArray) -> void:
 		_rd.texture_update(_depth, 0, data)
 
 
-func _rt_update(wave_rid: RID, pc: PackedByteArray, p_lit: bool) -> void:
+func _rt_update(wave_rid: RID, pcs: Array[PackedByteArray]) -> void:
 	if _rd == null or not _splat_pipeline.is_valid() or not _gain[0].is_valid():
 		return
-	if not p_lit or not wave_rid.is_valid() or not _rd.texture_is_valid(wave_rid):
+	if pcs.is_empty() or not wave_rid.is_valid() or not _rd.texture_is_valid(wave_rid):
 		_rd.texture_clear(_gain[0], Color(1, 1, 1, 1), 0, 1, 0, 1)
 		return
 
@@ -229,14 +257,16 @@ func _rt_update(wave_rid: RID, pc: PackedByteArray, p_lit: bool) -> void:
 
 	var gx := WaterRD.group_count(size.x, LOCAL_SIZE)
 	var gy := WaterRD.group_count(size.y, LOCAL_SIZE)
-	var sub := pc.decode_s32(8)
+	var sub := pcs[0].decode_s32(8)
+	var channels := int(pcs[0].decode_float(56))
+	var layers := pcs.size()
 
 	var cl := _rd.compute_list_begin()
 	_rd.compute_list_bind_compute_pipeline(cl, _splat_pipeline)
 	_rd.compute_list_bind_uniform_set(cl, splat_set, 0)
-	_rd.compute_list_set_push_constant(cl, pc, pc.size())
-	var channels := int(pc.decode_float(56))
-	_rd.compute_list_dispatch(cl, WaterRD.group_count(size.x * sub, LOCAL_SIZE), WaterRD.group_count(size.y * sub, LOCAL_SIZE), channels)
+	for pc in pcs:
+		_rd.compute_list_set_push_constant(cl, pc, pc.size())
+		_rd.compute_list_dispatch(cl, WaterRD.group_count(size.x * sub, LOCAL_SIZE), WaterRD.group_count(size.y * sub, LOCAL_SIZE), channels)
 	_rd.compute_list_add_barrier(cl)
 
 	_rd.compute_list_bind_compute_pipeline(cl, _denoise_pipeline)
@@ -244,7 +274,7 @@ func _rt_update(wave_rid: RID, pc: PackedByteArray, p_lit: bool) -> void:
 			PackedFloat32Array([1.0 / FIXED_POINT, float(channels), 0.0, 0.0]))
 	_rd.compute_list_bind_uniform_set(cl, resolve_set, 0)
 	_rd.compute_list_set_push_constant(cl, dpc, dpc.size())
-	_rd.compute_list_dispatch(cl, gx, gy, 1)
+	_rd.compute_list_dispatch(cl, gx, gy, layers)
 	var cur := first
 	for i in n:
 		_rd.compute_list_add_barrier(cl)
@@ -252,7 +282,7 @@ func _rt_update(wave_rid: RID, pc: PackedByteArray, p_lit: bool) -> void:
 				PackedFloat32Array([0.0, 0.0, 0.0, 0.0]))
 		_rd.compute_list_bind_uniform_set(cl, sets[cur], 0)
 		_rd.compute_list_set_push_constant(cl, dpc, dpc.size())
-		_rd.compute_list_dispatch(cl, gx, gy, 1)
+		_rd.compute_list_dispatch(cl, gx, gy, layers)
 		cur = 1 - cur
 	_rd.compute_list_end()
 

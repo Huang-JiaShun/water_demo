@@ -12,7 +12,8 @@ func _initialize() -> void:
 	root.add_child(scene)
 	if "sun" in OS.get_cmdline_user_args():
 		var body: WaterBody = scene.get_node("WaterBody")
-		body.tank_light.visible = false
+		for l in body.tank_lights:
+			l.visible = false
 		(scene.get_node("DirectionalLight3D") as Node3D).visible = true
 	root.size = Vector2i(1280, 720)
 

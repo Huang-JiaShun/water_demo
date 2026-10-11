@@ -1,22 +1,31 @@
 // Underwater helpers for decor / fish / particle materials (docs/water_architecture.md §6.2).
 // Requires water_common.gdshaderinc to be included first.
 //
-// Caustic lookup: a point q is lit through the rest-surface entry point of the
-// flat-surface refracted key-light ray that reaches it:
+// Key lights: up to WATER_MAX_LIGHTS (suns and/or local tank lights). Each has its
+// own layer in the caustic and light-depth textures, stacked vertically (layer i
+// covers v in [i, i + 1] / WATER_MAX_LIGHTS). A point q is lit by light i through
+// the rest-surface entry point of the flat-surface refracted ray that reaches it:
 //   directional sun:  dist = (surface - q.y) / Lw.y, entry = q.xz + Lw.xz * dist
 //   local tank light: exact Snell inverse from the light position (water_light.glsl)
-// The caustic texture stores the gain (1 = calm water) at that entry point, and
-// the light-depth texture stores how far the ray travels before hitting a solid.
+// The caustic layer stores the gain (1 = calm water) at that entry point, and
+// the light-depth layer stores how far the ray travels before hitting a solid.
+//
+// Global uniforms cannot be arrays, so per-light data lives in mat4 columns.
+
+#define WATER_MAX_LIGHTS 4
 
 global uniform sampler2D water_caustic_tex;
 global uniform sampler2D water_light_depth_tex;
-global uniform vec4 water_light_dir;
 global uniform vec4 water_caustic_params; // x = strength, y = dispersion, z = 1: texture is true RGB, w = diffuse fill
-// Directional: x = tan of the in-water sun half-angle.
-// Local: x = LED bar half length (m), y = bar half width (m), zw = bar axis (tank xz, unit).
-global uniform vec4 water_caustic_blur;
-global uniform vec4 water_light_pos;      // xyz = tank-space key light position, w = 1: local light
-global uniform int water_light_leds;      // LEDs sampled along the bar (local light)
+global uniform int water_light_count;
+// Column i: sun: xyz = tank-space refracted direction toward it (in water), w = 0.
+//           local: xyz = tank-space position, w = 1.
+global uniform mat4 water_lights;
+// Column i: sun: x = tan of the in-water half-angle.
+//           local: x = LED bar half length, y = half width (tank units), zw = bar axis (tank xz).
+global uniform mat4 water_light_shapes;
+global uniform vec4 water_light_leds;     // per light: LEDs sampled along the bar
+
 
 // Mirror of wl_entry_local() in water/shared/water_light.glsl (RD side). Keep in sync.
 vec3 water_light_entry_local(vec3 q, vec3 P, float surf, float ior, out vec3 Lw) {
@@ -41,50 +50,78 @@ vec3 water_light_entry_local(vec3 q, vec3 P, float surf, float ior, out vec3 Lw)
 	return vec3(P.xz + rh * a, D / cw);
 }
 
-// xy = entry point (tank xz), z = in-water distance to it. Lw: toward the light.
-vec3 water_light_entry(vec3 q, out vec3 Lw) {
-	if (water_light_pos.w > 0.5) {
-		return water_light_entry_local(q, water_light_pos.xyz, water_surface_height, water_ior, Lw);
+// xy = entry point (tank xz), z = in-water distance to it. Lw: toward light i.
+vec3 water_light_entry(vec3 q, int i, out vec3 Lw) {
+	vec4 l = water_lights[i];
+	if (l.w > 0.5) {
+		return water_light_entry_local(q, l.xyz, water_surface_height, water_ior, Lw);
 	}
-	Lw = water_light_dir.xyz;
+	Lw = l.xyz;
 	float dist = max(water_surface_height - q.y, 0.0) / max(Lw.y, 0.05);
 	return vec3(q.xz + Lw.xz * dist, dist);
 }
 
-// For light() of non-directional lights: true if the light arriving at world_pos
-// from world-space direction light_dir_world is the water's local key light.
-bool water_is_key_light(vec3 world_pos, vec3 light_dir_world) {
-	if (water_light_pos.w < 0.5) return false;
+// For light(): which water key light (index) is the light arriving at world_pos
+// from world-space direction light_dir_world, or -1 for plain room fill.
+// Directional lights match a sun, others the local light they point back to
+// (loose test: the light refracts at the surface; the best match wins).
+int water_key_light(vec3 world_pos, vec3 light_dir_world, bool directional) {
 	vec3 q = water_tank_pos(world_pos);
 	vec3 l = normalize(mat3(water_world_to_tank) * light_dir_world);
-	// The light refracts at the surface, so compare loosely.
-	return dot(l, normalize(water_light_pos.xyz - q)) > 0.9;
+	int best = -1;
+	float best_dot = directional ? 0.995 : 0.9;
+	for (int i = 0; i < min(water_light_count, WATER_MAX_LIGHTS); i++) {
+		vec4 k = water_lights[i];
+		if ((k.w > 0.5) == directional) continue;
+		vec3 to_l;
+		if (directional) {
+			// Back to the air-side direction (undo the refraction).
+			vec2 a = k.xz * water_ior;
+			to_l = vec3(a.x, sqrt(max(1.0 - dot(a, a), 0.0)), a.y);
+		} else {
+			to_l = normalize(k.xyz - q);
+		}
+		float d = dot(l, to_l);
+		if (d > best_dot) {
+			best_dot = d;
+			best = i;
+		}
+	}
+	return best;
 }
 
-vec3 water_caustic_tap(vec2 uv, vec2 shift) {
+// uv in one layer -> uv in the stacked texture. Clamped half a texel inside the
+// layer so bilinear taps never bleed into the neighbouring light.
+vec2 water_layer_uv(vec2 uv, int layer, sampler2D tex) {
+	float h = float(textureSize(tex, 0).y) / float(WATER_MAX_LIGHTS);
+	uv.y = clamp(uv.y, 0.5 / h, 1.0 - 0.5 / h);
+	return vec2(uv.x, (uv.y + float(layer)) / float(WATER_MAX_LIGHTS));
+}
+
+vec3 water_caustic_tap(vec2 uv, vec2 shift, int layer) {
 	if (water_caustic_params.z > 0.5) {
 		// True RGB: every channel was traced with its own IOR.
-		return textureLod(water_caustic_tex, uv, 0.0).rgb;
+		return textureLod(water_caustic_tex, water_layer_uv(uv, layer, water_caustic_tex), 0.0).rgb;
 	}
-	return vec3(textureLod(water_caustic_tex, uv - shift, 0.0).r,
-			textureLod(water_caustic_tex, uv, 0.0).g,
-			textureLod(water_caustic_tex, uv + shift, 0.0).b);
+	return vec3(textureLod(water_caustic_tex, water_layer_uv(uv - shift, layer, water_caustic_tex), 0.0).r,
+			textureLod(water_caustic_tex, water_layer_uv(uv, layer, water_caustic_tex), 0.0).g,
+			textureLod(water_caustic_tex, water_layer_uv(uv + shift, layer, water_caustic_tex), 0.0).b);
 }
 
-// Returns per-channel caustic gain for key light reaching world_pos (1 = no caustic effect).
+// Per-channel caustic gain of key light i reaching world_pos (1 = no caustic effect).
 // Points above the surface, outside the footprint or behind a light-depth
 // occluder return 1, leaving shadowing to Godot's own shadow map.
-vec3 water_caustics(vec3 world_pos) {
-	if (water_light_dir.w < 0.5) return vec3(1.0);
+vec3 water_caustics(vec3 world_pos, int i) {
+	if (i < 0 || i >= min(water_light_count, WATER_MAX_LIGHTS)) return vec3(1.0);
 	vec3 q = water_tank_pos(world_pos);
 	float depth = water_surface_height - q.y;
 	if (depth <= 0.0) return vec3(1.0);
 	vec3 Lw;
-	vec3 ent = water_light_entry(q, Lw);
+	vec3 ent = water_light_entry(q, i, Lw);
 	float dist = ent.z;
 	vec2 uv = water_tank_uv(vec3(ent.x, 0.0, ent.y));
 	if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec3(1.0);
-	float blocked = textureLod(water_light_depth_tex, uv, 0.0).r;
+	float blocked = textureLod(water_light_depth_tex, water_layer_uv(uv, i, water_light_depth_tex), 0.0).r;
 	if (dist > blocked + 0.01) return vec3(1.0);
 
 	vec2 shift = vec2(0.0);
@@ -93,37 +130,38 @@ vec3 water_caustics(vec3 world_pos) {
 		// shifts their entry points along the horizontal light direction with depth.
 		shift = normalize(Lw.xz + vec2(1e-5)) * dist * water_caustic_params.y / water_tank_size.xz;
 	}
+	vec4 shape = water_light_shapes[i];
 	vec3 g = vec3(0.0);
-	if (water_light_pos.w > 0.5) {
+	if (water_lights[i].w > 0.5) {
 		// LED bar: every LED casts its own copy of the pattern. Moving the source by
 		// x moves q's entry point by x * k / (1 + k), k = D / (n h) (paraxial), so the
 		// copies spread apart with depth: sharp just below the surface, layered and
 		// criss-crossed deeper down, like real hood lighting. The bar width blurs
 		// each copy slightly across the bar.
-		float h = max(water_light_pos.y - water_surface_height, 1e-3);
+		float h = max(water_lights[i].y - water_surface_height, 1e-3);
 		float k = depth / (water_ior * h);
 		float m = k / (1.0 + k);
-		vec2 axis = water_caustic_blur.zw;
+		vec2 axis = shape.zw;
 		vec2 perp = vec2(-axis.y, axis.x);
-		int n = clamp(water_light_leds, 1, 16);
-		vec2 w_uv = perp * water_caustic_blur.y * m * 0.6 / water_tank_size.xz;
-		for (int i = 0; i < n; i++) {
-			float x = n > 1 ? (float(i) / float(n - 1) * 2.0 - 1.0) * water_caustic_blur.x : 0.0;
+		int n = clamp(int(water_light_leds[i] + 0.5), 1, 16);
+		vec2 w_uv = perp * shape.y * m * 0.6 / water_tank_size.xz;
+		for (int j = 0; j < n; j++) {
+			float x = n > 1 ? (float(j) / float(n - 1) * 2.0 - 1.0) * shape.x : 0.0;
 			vec2 o = axis * x * m / water_tank_size.xz;
-			g += water_caustic_tap(uv + o + w_uv, shift) + water_caustic_tap(uv + o - w_uv, shift);
+			g += water_caustic_tap(uv + o + w_uv, shift, i) + water_caustic_tap(uv + o - w_uv, shift, i);
 		}
 		g /= float(2 * n);
 	} else {
 		// Sun-disc penumbra: each point sees the surface through a cone of half-angle
 		// atan(blur), so the caustic is the texture averaged over a disc of radius
 		// dist * tan. Deeper points get softer, lower-contrast caustics.
-		vec2 r_uv = vec2(dist * water_caustic_blur.x) / water_tank_size.xz;
+		vec2 r_uv = vec2(dist * shape.x) / water_tank_size.xz;
 		// 1 centre + 8 taps on a ring at 0.7 r (approximates the uniform-disc mean).
 		const vec2 TAPS[8] = vec2[8](vec2(1.0, 0.0), vec2(0.7071, 0.7071), vec2(0.0, 1.0), vec2(-0.7071, 0.7071),
 				vec2(-1.0, 0.0), vec2(-0.7071, -0.7071), vec2(0.0, -1.0), vec2(0.7071, -0.7071));
-		for (int i = -1; i < 8; i++) {
-			vec2 o = i < 0 ? vec2(0.0) : TAPS[i] * 0.7 * r_uv;
-			g += water_caustic_tap(uv + o, shift);
+		for (int j = -1; j < 8; j++) {
+			vec2 o = j < 0 ? vec2(0.0) : TAPS[j] * 0.7 * r_uv;
+			g += water_caustic_tap(uv + o, shift, i);
 		}
 		g /= 9.0;
 	}

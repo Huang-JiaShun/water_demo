@@ -20,17 +20,20 @@ layout(set = 0, binding = 0) uniform sampler2D depth_tex;
 layout(rgba16f, set = 0, binding = 1) uniform restrict writeonly image2D inscatter_out;
 layout(rgba16f, set = 0, binding = 2) uniform restrict writeonly image2D trans_out;
 
+#define MAX_LIGHTS 4
+
 layout(set = 0, binding = 3, std140) uniform Params {
 	mat4 inv_proj;      // NDC (Vulkan, reversed-Z) -> view
 	mat4 view_to_tank;  // view -> tank local (origin = floor centre)
 	vec4 tank_max;      // xyz = (half size x, rest surface height, half size z), w = 1: god rays
 	vec4 sigma_a;       // xyz, w = phase g
 	vec4 sigma_s;       // xyz, w = ior
-	vec4 sun_dir;       // xyz = toward the sun in tank space (unit), w = scatter strength
-	vec4 sun_irr;       // rgb above-water irradiance (local light: colour * energy), w = frame index (jitter)
-	vec4 ambient;       // rgb above-water ambient radiance, w = step count
-	vec4 light_pos;     // xyz = tank-space key light position, w = 1: local light (else the sun)
-	vec4 light_atten;   // local light: x = 1 / range, y = attenuation exponent, z = tank units per metre
+	vec4 misc;          // x = scatter strength, y = frame index (jitter), z = step count, w = light count
+	vec4 ambient;       // rgb above-water ambient radiance
+	// Per key light (same order as the caustic layers):
+	vec4 light[MAX_LIGHTS];  // sun: xyz = toward it (tank, air side, unit), w = 0. local: xyz = tank pos, w = 1
+	vec4 color[MAX_LIGHTS];  // rgb = colour * energy (sun: irradiance)
+	vec4 atten[MAX_LIGHTS];  // local: x = 1 / range, y = attenuation exponent, z = tank units per metre
 	ivec4 sizes;        // xy = low-res size, zw = full-res size
 } u;
 
@@ -44,9 +47,16 @@ float omni_attenuation(float d, float inv_range, float decay) {
 }
 
 // Caustics (P3). Both are indexed by the rest-surface entry point of the
-// refracted sun ray; see water/caustics/caustics.gd.
+// refracted light ray, one layer per light stacked vertically; see
+// water/caustics/caustics.gd.
 layout(set = 0, binding = 4) uniform sampler2D caustic_tex;     // rgb gain, 1 = calm water
 layout(set = 0, binding = 5) uniform sampler2D light_depth_tex; // distance to first solid
+
+// Layer-local uv -> stacked uv, clamped half a texel inside the layer.
+vec2 layer_uv(vec2 uv, int layer, float layer_h) {
+	uv.y = clamp(uv.y, 0.5 / layer_h, 1.0 - 0.5 / layer_h);
+	return vec2(uv.x, (uv.y + float(layer)) / float(MAX_LIGHTS));
+}
 
 const float PI = 3.14159265359;
 
@@ -114,31 +124,36 @@ void main() {
 	if (t1 > t0) {
 		float g = u.sigma_a.w;
 		float ior = u.sigma_s.w;
-		// Sun refracted into the water through the flat rest surface.
-		vec3 Ls = u.sun_dir.xyz;
-		float cos_air = max(Ls.y, 0.0);
 		float eta = 1.0 / ior;
-		float cos_w = sqrt(max(1.0 - eta * eta * (1.0 - cos_air * cos_air), 0.0));
-		vec3 Lw = normalize(vec3(Ls.x * eta, cos_w, Ls.z * eta));
 		float f0 = pow((ior - 1.0) / (ior + 1.0), 2.0);
-		float Ft = 1.0 - (f0 + (1.0 - f0) * pow(1.0 - cos_air, 5.0));
-		vec3 sun_in = u.sun_irr.rgb * Ft;
-		float inv_cos_w = 1.0 / max(cos_w, 0.05);
-		bool local = u.light_pos.w > 0.5;
+		int n_lights = min(int(u.misc.w), MAX_LIGHTS);
+		float layer_h = float(textureSize(caustic_tex, 0).y) / float(MAX_LIGHTS);
 
 		// Phase: HG (Mie) + a little Rayleigh, blended toward isotropic by the
 		// single-scatter albedo as a cheap multiple-scattering approximation.
-		float c = dot(rd, Lw);
-		float ph = 0.95 * hg_phase(c, g) + 0.05 * rayleigh_phase(c);
 		vec3 albedo = sig_s / max(sig_t, vec3(1e-5));
-		float a_lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-		ph = mix(ph, 1.0 / (4.0 * PI), clamp(a_lum, 0.0, 1.0));
+		float a_lum = clamp(dot(albedo, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
 
-		int steps = max(int(u.ambient.w), 1);
+		// Suns: one refracted direction, transmittance and phase per ray.
+		vec3 sun_Lw[MAX_LIGHTS];
+		vec3 sun_in[MAX_LIGHTS];
+		float sun_ph[MAX_LIGHTS];
+		for (int li = 0; li < n_lights; li++) {
+			vec3 Ls = u.light[li].xyz;
+			float cos_air = max(Ls.y, 0.0);
+			float cos_w = sqrt(max(1.0 - eta * eta * (1.0 - cos_air * cos_air), 0.0));
+			sun_Lw[li] = normalize(vec3(Ls.x * eta, max(cos_w, 0.05), Ls.z * eta));
+			float Ft = 1.0 - (f0 + (1.0 - f0) * pow(1.0 - cos_air, 5.0));
+			sun_in[li] = u.color[li].rgb * Ft;
+			float c = dot(rd, sun_Lw[li]);
+			sun_ph[li] = mix(0.95 * hg_phase(c, g) + 0.05 * rayleigh_phase(c), 1.0 / (4.0 * PI), a_lum);
+		}
+
+		int steps = max(int(u.misc.z), 1);
 		float seg = t1 - t0;
 		// Per pixel dither. With the temporal pass on, the frame index offsets it
 		// every frame and the history integrates the jitter (0 when temporal is off).
-		float jitter = ign(vec2(lo) + u.sun_irr.w * 5.588238);
+		float jitter = ign(vec2(lo) + u.misc.y * 5.588238);
 		const float K = 2.0; // exponential spacing: denser near the camera
 		float norm = 1.0 / (exp(K) - 1.0);
 		float prev = 0.0;
@@ -151,44 +166,52 @@ void main() {
 
 			vec3 x = ro + rd * t;
 			float d = clamp(u.tank_max.y - x.y, 0.0, u.tank_max.y);
-			float dist = d * inv_cos_w;
-			vec2 e = x.xz + Lw.xz * dist;
-			vec3 sun;
-			float ph_x = ph;
-			if (local) {
-				// Hood light: per-sample entry point, direction and falloff.
-				vec3 Lx;
-				vec3 en = wl_entry_local(x, u.light_pos.xyz, u.tank_max.y, ior, Lx);
-				e = en.xy;
-				dist = en.z;
-				vec3 air = vec3(en.x, u.tank_max.y, en.y) - u.light_pos.xyz;
-				float la = length(air);
-				float ca = clamp(-air.y / max(la, 1e-5), 0.0, 1.0);
-				float Ftx = 1.0 - (f0 + (1.0 - f0) * pow(1.0 - ca, 5.0));
-				// Unfolded path length for the falloff (metres).
-				float r_m = (la + dist) / max(u.light_atten.z, 1e-5);
-				sun = u.sun_irr.rgb * Ftx * omni_attenuation(r_m, u.light_atten.x, u.light_atten.y)
-						* exp(-sig_t * dist);
-				float cx = dot(rd, Lx);
-				ph_x = mix(0.95 * hg_phase(cx, g) + 0.05 * rayleigh_phase(cx), 1.0 / (4.0 * PI),
-						clamp(a_lum, 0.0, 1.0));
-			} else {
-				sun = sun_in * exp(-sig_t * d * inv_cos_w);
-			}
-			if (u.tank_max.w > 0.5) {
-				// God rays: the caustic pattern and decor shadows carried along
-				// the light ray. Caustics are sharpest at their focal depth, so the
-				// shafts vary naturally with depth.
-				vec2 cuv = e / (2.0 * u.tank_max.xz) + 0.5;
-				vec3 vis = vec3(1.0);
-				if (all(greaterThanEqual(cuv, vec2(0.0))) && all(lessThanEqual(cuv, vec2(1.0)))) {
-					float blocked = textureLod(light_depth_tex, cuv, 0.0).r;
-					vis = dist > blocked + 0.005 ? vec3(0.0) : textureLod(caustic_tex, cuv, 0.0).rgb;
+			vec3 lit = vec3(0.0); // sum over lights of radiance * phase
+			for (int li = 0; li < n_lights; li++) {
+				vec2 e;
+				float dist;
+				vec3 sun;
+				float ph_x;
+				if (u.light[li].w > 0.5) {
+					// Hood light: per-sample entry point, direction and falloff.
+					vec3 Lx;
+					vec3 P = u.light[li].xyz;
+					vec3 en = wl_entry_local(x, P, u.tank_max.y, ior, Lx);
+					e = en.xy;
+					dist = en.z;
+					vec3 air = vec3(en.x, u.tank_max.y, en.y) - P;
+					float la = length(air);
+					float ca = clamp(-air.y / max(la, 1e-5), 0.0, 1.0);
+					float Ftx = 1.0 - (f0 + (1.0 - f0) * pow(1.0 - ca, 5.0));
+					// Unfolded path length for the falloff (metres).
+					float r_m = (la + dist) / max(u.atten[li].z, 1e-5);
+					sun = u.color[li].rgb * Ftx * omni_attenuation(r_m, u.atten[li].x, u.atten[li].y)
+							* exp(-sig_t * dist);
+					float cx = dot(rd, Lx);
+					ph_x = mix(0.95 * hg_phase(cx, g) + 0.05 * rayleigh_phase(cx), 1.0 / (4.0 * PI), a_lum);
+				} else {
+					dist = d / sun_Lw[li].y;
+					e = x.xz + sun_Lw[li].xz * dist;
+					sun = sun_in[li] * exp(-sig_t * dist);
+					ph_x = sun_ph[li];
 				}
-				sun *= vis;
+				if (u.tank_max.w > 0.5) {
+					// God rays: the caustic pattern and decor shadows carried along
+					// the light ray. Caustics are sharpest at their focal depth, so the
+					// shafts vary naturally with depth.
+					vec2 cuv = e / (2.0 * u.tank_max.xz) + 0.5;
+					vec3 vis = vec3(1.0);
+					if (all(greaterThanEqual(cuv, vec2(0.0))) && all(lessThanEqual(cuv, vec2(1.0)))) {
+						vec2 luv = layer_uv(cuv, li, layer_h);
+						float blocked = textureLod(light_depth_tex, luv, 0.0).r;
+						vis = dist > blocked + 0.005 ? vec3(0.0) : textureLod(caustic_tex, luv, 0.0).rgb;
+					}
+					sun *= vis;
+				}
+				lit += sun * ph_x;
 			}
 			vec3 amb = u.ambient.rgb * exp(-sig_t * d);
-			vec3 S = sig_s * (sun * ph_x + amb) * u.sun_dir.w;
+			vec3 S = sig_s * (lit + amb) * u.misc.x;
 
 			// Analytic integral over the segment (energy-conserving for any ds).
 			vec3 Tseg = exp(-sig_t * ds);
