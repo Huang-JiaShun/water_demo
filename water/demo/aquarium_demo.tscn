@@ -70,7 +70,6 @@ bump_strength = 4.0
 [sub_resource type="ShaderMaterial" id="SurfaceMat"]
 render_priority = 0
 shader = ExtResource("3_surf")
-shader_parameter/height_scale = 3.0
 shader_parameter/detail_normal = SubResource("DetailNormal")
 shader_parameter/detail_strength = 0.12
 shader_parameter/detail_scale_a = 2.5
@@ -91,11 +90,6 @@ shader_parameter/high_quality_refraction = true
 shader_parameter/march_steps = 8
 shader_parameter/march_thickness = 0.05
 shader_parameter/tint_from_above = true
-shader_parameter/tint_absorption = Vector3(0.45, 0.07, 0.03)
-shader_parameter/tint_scattering = Vector3(0.04, 0.05, 0.06)
-shader_parameter/tint_density = 8.0
-shader_parameter/tint_water_color = Color(0.05, 0.32, 0.36, 1)
-shader_parameter/tint_max_path = 3.0
 
 [sub_resource type="BoxMesh" id="FloorMesh"]
 size = Vector3(1.2, 0.02, 0.45)
@@ -141,14 +135,6 @@ render_priority = 0
 shader = ExtResource("7_glass")
 shader_parameter/edge_tint = Color(0.85, 0.95, 0.9, 1)
 shader_parameter/roughness_val = 0.02
-shader_parameter/water_min = Vector3(-0.6, 0, -0.225)
-shader_parameter/water_max = Vector3(0.6, 0.42, 0.225)
-shader_parameter/absorption = Vector3(0.45, 0.07, 0.03)
-shader_parameter/scattering = Vector3(0.04, 0.05, 0.06)
-shader_parameter/density_scale = 8.0
-shader_parameter/water_color = Color(0.05, 0.32, 0.36, 1)
-shader_parameter/max_path = 3.0
-shader_parameter/wave_height_scale = 3.0
 
 [sub_resource type="BoxMesh" id="GlassSide"]
 size = Vector3(0.006, 0.5, 0.45)

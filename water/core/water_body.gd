@@ -54,6 +54,12 @@ signal sim_texture_ready
 	set(v):
 		wave_restore = v
 		if sim: sim.restore = v
+## Visual multiplier on the simulated height and slopes (1 = physical). Shared by
+## the surface, glass waterline and caustics so they all see the same waves.
+@export_range(0.0, 10.0, 0.01) var wave_height_scale := 3.0:
+	set(v):
+		wave_height_scale = v
+		_queue_publish()
 ## Surface mesh using water_surface.gdshader. Tier switching toggles its
 ## high-precision refraction. Empty: the first child using that shader.
 @export var surface: GeometryInstance3D
@@ -110,11 +116,14 @@ signal sim_texture_ready
 @export_range(0.0, 4.0, 0.01) var scatter_strength := 1.0
 
 @export_group("Caustics")
+## Enables the caustic light pattern (ripple shadows) on the floor and submerged
+## objects. When off, underwater surfaces get uniform light and the caustic pass is skipped.
+@export var caustics_enabled := false:
+	set(v):
+		caustics_enabled = v
+		_queue_publish()
 ## Physics layers that cast caustic shadows (light-depth bake).
 @export_flags_3d_physics var caustic_mask := 1
-## Multiplier on the wave slopes used for caustics. Match the surface material's
-## height_scale so the caustics agree with the visible waves.
-@export_range(0.0, 10.0, 0.01) var caustic_height_scale := 3.0
 ## Blend between uniform light (0) and full caustics (1).
 @export_range(0.0, 2.0, 0.01) var caustic_strength := 1.0:
 	set(v):
@@ -429,12 +438,12 @@ func _detach_volume() -> void:
 
 
 func _update_caustics() -> void:
-	if caustics == null or optics == null or sim == null:
+	if not caustics_enabled or caustics == null or optics == null or sim == null:
 		return
 	var stale := caustics.set_lights(key_light_info(), water_depth, optics.ior)
 	if not stale.is_empty() and _physics_ready:
 		bake_light_depth(stale)
-	caustics.update(sim.output_texture.texture_rd_rid, tank_size, water_depth, optics.ior, caustic_height_scale,
+	caustics.update(sim.output_texture.texture_rd_rid, tank_size, water_depth, optics.ior, wave_height_scale,
 			optics.dispersion)
 
 
@@ -464,7 +473,7 @@ func _update_volume() -> void:
 	volume.set_frame_data(global_transform.affine_inverse(), tank_size, water_depth, optics, lights, amb)
 	if caustics:
 		volume.set_caustics(caustics.caustic_texture.texture_rd_rid, caustics.light_depth_texture.texture_rd_rid,
-				quality != null and quality.caustic_god_rays and caustics.lit)
+				quality != null and quality.caustic_god_rays and caustics.lit and caustics_enabled)
 
 
 static func _light_range(l: Light3D) -> float:

@@ -33,3 +33,31 @@ extends Resource
 	set(v):
 		dispersion = v
 		emit_changed()
+
+@export_group("View tint")
+## Colour the water fades toward when seen through the glass or from above.
+## An artistic stand-in for in-scatter, separate from the volume pass.
+@export var view_color := Color(0.05, 0.32, 0.36):
+	set(v):
+		view_color = v
+		emit_changed()
+
+## Extinction (absorption + scattering, 1/m) for the view tint. Independent of
+## the physical coefficients above, so the volume pass can be off (σ = 0) while
+## the glass and surface still read as tinted water.
+@export var view_extinction := Vector3(0.49, 0.12, 0.09):
+	set(v):
+		view_extinction = v
+		emit_changed()
+
+## Multiplier on view_extinction.
+@export_range(0.0, 50.0, 0.01) var view_density := 8.0:
+	set(v):
+		view_density = v
+		emit_changed()
+
+## Longest water path (m) the view tint accounts for.
+@export_range(0.0, 10.0, 0.01, "suffix:m") var view_max_path := 3.0:
+	set(v):
+		view_max_path = v
+		emit_changed()

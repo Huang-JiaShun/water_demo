@@ -14,15 +14,11 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_always, cull_disabled, specular_schlick_ggx;
 
-#include "res://water/shared/water_common.gdshaderinc"
+#include "res://water/shared/water_view.gdshaderinc"
 
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap, repeat_disable;
 uniform sampler2D depth_tex : hint_depth_texture, filter_nearest, repeat_disable;
-
-group_uniforms waves;
-/// Visual multiplier on the simulated height and slopes. 1 = physical.
-uniform float height_scale : hint_range(0.0, 10.0) = 3.0;
 
 group_uniforms detail;
 /// Seamless normal map for small-scale ripples. It is sampled twice, at two scales and directions.
@@ -60,13 +56,8 @@ uniform bool high_quality_refraction = false;
 uniform int march_steps : hint_range(4, 32) = 8;
 
 group_uniforms tint;
-/// Keep in sync with glass.gdshader so top and side views match.
+/// Tint the refracted scene from above. Colour and density come from WaterOptics.
 uniform bool tint_from_above = true;
-uniform vec3 tint_absorption = vec3(0.45, 0.07, 0.03);
-uniform vec3 tint_scattering = vec3(0.04, 0.05, 0.06);
-uniform float tint_density : hint_range(0.0, 50.0) = 8.0;
-uniform vec3 tint_water_color : source_color = vec3(0.05, 0.32, 0.36);
-uniform float tint_max_path = 3.0;
 group_uniforms refraction;
 uniform float march_thickness : hint_range(0.005, 0.5) = 0.05;
 
@@ -136,12 +127,12 @@ void vertex() {
 	// The mesh is a child of WaterBody with no rotation, so local +Y is tank +Y.
 	vec2 to_wall;
 	float dw = wall_distance(v_tank_pos.xz, to_wall);
-	VERTEX.y += water_sample_wave(water_tank_uv(v_tank_pos)).x * height_scale + meniscus(dw).x;
+	VERTEX.y += water_sample_wave(water_tank_uv(v_tank_pos)).x * water_height_scale + meniscus(dw).x;
 }
 
 void fragment() {
 	// Normal: simulated slopes, sampled per pixel so they stay sharp, plus scrolling detail.
-	vec2 slope = water_sample_wave(water_tank_uv(v_tank_pos)).yz * height_scale;
+	vec2 slope = water_sample_wave(water_tank_uv(v_tank_pos)).yz * water_height_scale;
 	float wave_slope = length(slope);
 	vec2 xz = v_tank_pos.xz;
 	vec2 to_wall;
@@ -235,9 +226,7 @@ void fragment() {
 		// Path length must come from the REFRACTED sample, not this pixel's
 		// straight-down depth, or unrefracted object silhouettes show through.
 		float refr_thick = max(scene_depth(refr_uv, INV_PROJECTION_MATRIX) - surface_depth, 0.0);
-		float path = clamp(refr_thick, 0.0, tint_max_path);
-		vec3 Tt = exp(-(tint_absorption + tint_scattering) * tint_density * path);
-		refracted = refracted * Tt + tint_water_color * (vec3(1.0) - Tt);
+		refracted = water_view_tint_apply(refracted, refr_thick);
 	}
 
 	// --- foam ------------------------------------------------------------------

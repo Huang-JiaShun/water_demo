@@ -17,6 +17,10 @@ const SIGMA_A := &"water_sigma_a"               # vec3       absorption (1/m)
 const SIGMA_S := &"water_sigma_s"               # vec3       scattering (1/m)
 const PHASE_G := &"water_phase_g"               # float
 const IOR := &"water_ior"                       # float
+const HEIGHT_SCALE := &"water_height_scale"     # float      visual multiplier on wave height/slopes
+const VIEW_TINT := &"water_view_tint"           # vec4       rgb = view colour, a = density multiplier
+const VIEW_EXTINCTION := &"water_view_extinction" # vec3     view-tint extinction (1/m), before density
+const VIEW_MAX_PATH := &"water_view_max_path"   # float      longest path (m) the view tint integrates
 const CAUSTIC_TEX := &"water_caustic_tex"       # sampler2D  RGBA32F gain vs calm water, per rest-surface entry point
 const LIGHT_DEPTH_TEX := &"water_light_depth_tex" # sampler2D R32F distance along the refracted sun ray to the first solid
 const CAUSTIC_PARAMS := &"water_caustic_params" # vec4       x = strength, y = dispersion (IOR spread), z = 1 if true RGB, w = diffuse fill
@@ -37,12 +41,17 @@ static func publish(body: WaterBody) -> void:
 		RenderingServer.global_shader_parameter_set(LIGHT_DEPTH_TEX, body.caustics.light_depth_texture)
 	RenderingServer.global_shader_parameter_set(TANK_SIZE, body.tank_size)
 	RenderingServer.global_shader_parameter_set(SURFACE_HEIGHT, body.water_depth)
+	RenderingServer.global_shader_parameter_set(HEIGHT_SCALE, body.wave_height_scale)
 	var o := body.optics
 	if o:
 		RenderingServer.global_shader_parameter_set(SIGMA_A, o.absorption)
 		RenderingServer.global_shader_parameter_set(SIGMA_S, o.scattering)
 		RenderingServer.global_shader_parameter_set(PHASE_G, o.phase_g)
 		RenderingServer.global_shader_parameter_set(IOR, o.ior)
+		var c := o.view_color
+		RenderingServer.global_shader_parameter_set(VIEW_TINT, Vector4(c.r, c.g, c.b, o.view_density))
+		RenderingServer.global_shader_parameter_set(VIEW_EXTINCTION, o.view_extinction)
+		RenderingServer.global_shader_parameter_set(VIEW_MAX_PATH, o.view_max_path)
 	publish_transform(body)
 
 
@@ -68,4 +77,4 @@ static func publish_transform(body: WaterBody) -> void:
 	RenderingServer.global_shader_parameter_set(LIGHT_LEDS, leds)
 	var disp := body.optics.dispersion if body.optics else 0.0
 	var rgb := 1.0 if c and c.is_true_rgb() else 0.0
-	RenderingServer.global_shader_parameter_set(CAUSTIC_PARAMS, Vector4(body.caustic_strength, disp, rgb, body.caustic_fill()))
+	RenderingServer.global_shader_parameter_set(CAUSTIC_PARAMS, Vector4(body.caustic_strength if body.caustics_enabled else 0.0, disp, rgb, body.caustic_fill()))
