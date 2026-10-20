@@ -14,17 +14,17 @@ extends RefCounted
 ## Returns an Image (FORMAT_R8) where 255 = water, 0 = solid at the surface.
 ## band: how far below the rest surface (m) an object still counts as a wall.
 ## Rocks just under the surface still block ripples visibly.
-static func bake(body: WaterBody, size: Vector2i, collision_mask: int, band := 0.01) -> Image:
+## xf: tank transform (origin = floor centre). ts: inner tank size. surface: rest
+## surface height in tank space.
+static func bake(space: PhysicsDirectSpaceState3D, xf: Transform3D, ts: Vector3, surface: float,
+		size: Vector2i, collision_mask: int, band := 0.01) -> Image:
 	var img := Image.create(size.x, size.y, false, Image.FORMAT_R8)
 	img.fill(Color(1, 0, 0))
-	var space := body.get_world_3d().direct_space_state
 	if space == null:
 		return img
 
-	var xf := body.global_transform
-	var ts := body.tank_size
 	var top := ts.y + 0.05
-	var bottom := body.water_depth - band
+	var bottom := surface - band
 	var q := PhysicsRayQueryParameters3D.new()
 	q.collision_mask = collision_mask
 	q.collide_with_areas = false

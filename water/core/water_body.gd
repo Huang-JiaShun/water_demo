@@ -12,6 +12,8 @@ extends Node3D
 
 signal sim_texture_ready
 
+const SURFACE_SHADER := preload("../surface/water_surface.gdshader")
+
 @export var tank_size := Vector3(1.2, 0.5, 0.45):
 	set(v):
 		tank_size = v.max(Vector3(0.05, 0.05, 0.05))
@@ -285,7 +287,8 @@ func bake_light_depth(layers := PackedInt32Array()) -> void:
 	for i in layers:
 		var key := caustics.light_keys[i]
 		caustics.upload_light_depth(i,
-				LightDepthBaker.bake(self, caustics.size, key, caustic_mask, optics.ior if optics else 1.333), key)
+				LightDepthBaker.bake(get_world_3d().direct_space_state, global_transform, tank_size, water_depth,
+						caustics.size, key, caustic_mask, optics.ior if optics else 1.333), key)
 
 func world_to_tank(p: Vector3) -> Vector3:
 	return global_transform.affine_inverse() * p
@@ -327,7 +330,8 @@ func intersect_surface(ray_origin: Vector3, ray_dir: Vector3) -> Variant:
 func bake_obstacles() -> void:
 	if sim == null or not is_inside_tree():
 		return
-	sim.set_obstacle_mask(ObstacleBaker.bake(self, sim.size, obstacle_mask))
+	sim.set_obstacle_mask(ObstacleBaker.bake(get_world_3d().direct_space_state, global_transform,
+			tank_size, water_depth, sim.size, obstacle_mask))
 
 
 # --- Internals -----------------------------------------------------------------
@@ -392,7 +396,7 @@ func _surface_material() -> ShaderMaterial:
 		var m := g.material_override as ShaderMaterial
 		if m == null and g is MeshInstance3D:
 			m = (g as MeshInstance3D).get_surface_override_material(0) as ShaderMaterial
-		if m and m.shader and m.shader.resource_path.ends_with("water_surface.gdshader"):
+		if m and m.shader == SURFACE_SHADER:
 			return m
 	return null
 

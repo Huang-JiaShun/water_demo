@@ -15,18 +15,17 @@ extends RefCounted
 
 ## key: WaterCaustics.light_key(): xyz = tank-space unit vector toward the light,
 ## below the surface (Lw), w = 0; or xyz = local light position, w = 1.
-static func bake(body: WaterBody, size: Vector2i, key: Vector4, collision_mask: int, ior := 1.333) -> PackedFloat32Array:
+## xf: tank transform (origin = floor centre). ts: inner tank size. surf: rest
+## surface height in tank space. space may be null (walls and floor only).
+static func bake(space: PhysicsDirectSpaceState3D, xf: Transform3D, ts: Vector3, surf: float,
+		size: Vector2i, key: Vector4, collision_mask: int, ior := 1.333) -> PackedFloat32Array:
 	var out := PackedFloat32Array()
 	out.resize(size.x * size.y)
-	var ts := body.tank_size
-	var surf := body.water_depth
 	var local := key.w > 0.5
 	var lp := Vector3(key.x, key.y, key.z)
 	var d := -lp
 	var hx := ts.x * 0.5
 	var hz := ts.z * 0.5
-	var space := body.get_world_3d().direct_space_state if body.is_inside_tree() else null
-	var xf := body.global_transform
 	var q := PhysicsRayQueryParameters3D.new()
 	q.collision_mask = collision_mask
 	q.collide_with_areas = false

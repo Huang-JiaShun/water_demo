@@ -29,8 +29,33 @@ const LIGHTS := &"water_lights"                 # mat4       column i: sun: refr
 const LIGHT_SHAPES := &"water_light_shapes"     # mat4       column i: sun: x = tan of in-water half-angle; local: x/y = bar half length/width, zw = bar axis
 const LIGHT_LEDS := &"water_light_leds"         # vec4       per light: LEDs sampled along the bar
 
+## Declarations (type, default) the water plugin registers in project.godot
+## [shader_globals] when enabled. Keep in sync with the constants above.
+const DECLARATIONS := {
+	WAVE_TEX: ["sampler2D", ""],
+	WORLD_TO_TANK: ["mat4", Projection.IDENTITY],
+	TANK_SIZE: ["vec3", Vector3(1.2, 0.5, 0.45)],
+	SURFACE_HEIGHT: ["float", 0.42],
+	SIGMA_A: ["vec3", Vector3(0.45, 0.07, 0.03)],
+	SIGMA_S: ["vec3", Vector3(0.04, 0.05, 0.06)],
+	PHASE_G: ["float", 0.85],
+	IOR: ["float", 1.333],
+	HEIGHT_SCALE: ["float", 3.0],
+	VIEW_TINT: ["vec4", Vector4(0.05, 0.32, 0.36, 8)],
+	VIEW_EXTINCTION: ["vec3", Vector3(0.49, 0.12, 0.09)],
+	VIEW_MAX_PATH: ["float", 3.0],
+	CAUSTIC_TEX: ["sampler2D", ""],
+	LIGHT_DEPTH_TEX: ["sampler2D", ""],
+	CAUSTIC_PARAMS: ["vec4", Vector4(1, 0.01, 0, 0)],
+	LIGHT_COUNT: ["int", 0],
+	LIGHTS: ["mat4", Projection(Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0))],
+	LIGHT_SHAPES: ["mat4", Projection(Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0))],
+	LIGHT_LEDS: ["vec4", Vector4.ONE],
+}
+
 ## Static-ish data: textures, dimensions, optics. Call when any of them change.
-## The parameters must already be declared in project.godot [shader_globals].
+## The parameters must already be declared in project.godot [shader_globals]
+## (the water plugin does this from DECLARATIONS).
 ## They are not registered at runtime: global_shader_parameter_get_list() is
 ## editor-only, and a shader referencing an undeclared global fails to compile anyway.
 static func publish(body: WaterBody) -> void:
