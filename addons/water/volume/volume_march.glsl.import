@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bine81qxrepp2"
+path="res://.godot/imported/volume_march.glsl-37e301805b76ebe73d7d7ebb40980c90.res"
+
+[deps]
+
+source_file="res://addons/water/volume/volume_march.glsl"
+dest_files=["res://.godot/imported/volume_march.glsl-37e301805b76ebe73d7d7ebb40980c90.res"]
+
+[params]
+

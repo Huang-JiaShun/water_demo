@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://6uniwfiw2ax8"
+path="res://.godot/imported/volume_temporal.glsl-370609c85774bd75ebfa210c0c4c00f0.res"
+
+[deps]
+
+source_file="res://addons/water/volume/volume_temporal.glsl"
+dest_files=["res://.godot/imported/volume_temporal.glsl-370609c85774bd75ebfa210c0c4c00f0.res"]
+
+[params]
+

@@ -1,38 +1,39 @@
-# Compute Texture
+# Water Demo
 
-This demo shows how to use compute shaders to populate a texture that is used as an input for a material shader.
-
-When the mouse cursor isn't hovering above the plane random "drops" of water are added that drive the ripple effect.
-When the mouse cursor is above the plane you can "draw" on the plane to drive the ripple effect.
+Real-time aquarium water for Godot 4.7 (Forward+): a GPU wave simulation with reflective
+obstacles, light caustics, volumetric in-water scattering, and glass and surface shaders.
 
 Language: GDScript
 
 Renderer: Forward+
 
-Check out this demo on the Asset Store: https://store.godotengine.org/asset/godot-foundation/compute-texture-demo/
+## Layout
 
-## Technical description
+- `addons/water/`: the reusable water addon (the `WaterBody` node, the simulation, caustics,
+  volume pass and shaders).
+- `demo/`: the aquarium demo scene (`aquarium_demo.tscn`, the main scene) and its helpers.
+- `tests/`: headless checks and a screenshot script.
+- `docs/water_architecture.md`: design and data flow.
 
-The texture populated by the compute shader contains height data that is used in the material shader to create a rain drops/water ripple effect. It's a well known technique that has been around since the mid 90ies, adapted to a compute shader.
+## Using the addon in another project
 
-Three textures are created directly on the rendering device:
-- One texture is used to write the heightmap to and used in the material shader.
-- One texture is read from and contains the previous frames data.
-- One texture is read from and contains data from the frame before that.
+1. Copy `addons/water/` into the project.
+2. Enable **Water** under Project Settings → Plugins. This declares the `water_*` global
+   shader parameters in `project.godot`, which the water shaders need in order to compile.
+3. Add a `WaterBody` node and give it a `WaterOptics` and a `WaterQuality` resource.
+   `demo/aquarium_demo.tscn` shows a complete setup.
 
-Instead of copying data from texture to texture to create this history, we simply cycle the RIDs.
+## Tests
 
-Note that in this demo we are using the main rendering device to ensure we execute our compute shader before our normal rendering.
+```
+godot --path . --script res://tests/verify_p0.gd
+godot --path . --script res://tests/verify_p3.gd
+godot --path . --script res://tests/verify_p4.gd
+```
 
-To use the texture with the latest height data we use a `Texture2DRD` resource, this is a special texture resource node that is able to use a texture directly created on the rendering device and expose it to material shaders.
-
-The material shader uses a standard gradient approach by sampling the height map and calculating tangent and bi-normal vectors and adjust the normal accordingly.
+These need a GPU (RenderingDevice), so they cannot run with `--headless`.
 
 ## Licenses
 
-Files in the `polyhaven/` folder are downloaded from <https://polyhaven.com/a/industrial_sunset_puresky>
-and are licensed under CC0 1.0 Universal.
-
-## Screenshots
-
-![Screenshot](screenshots/compute_texture.webp)
+Files in `assets/polyhaven/` are downloaded from <https://polyhaven.com/> and are
+licensed under CC0 1.0 Universal.

@@ -10,9 +10,9 @@ config_version=5
 
 [application]
 
-config/name="Compute Texture"
-config/tags=PackedStringArray("3d", "demo", "official", "rendering")
-run/main_scene="res://water/demo/aquarium_demo.tscn"
+config/name="Water Demo"
+config/tags=PackedStringArray("3d", "demo", "rendering")
+run/main_scene="res://demo/aquarium_demo.tscn"
 config/features=PackedStringArray("4.7")
 config/icon="res://icon.svg"
 

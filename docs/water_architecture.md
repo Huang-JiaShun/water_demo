@@ -50,7 +50,7 @@ Because the volume composite runs **post-opaque**, the screen texture the surfac
 ## 4. Module layout
 
 ```
-res://water/
+res://addons/water/
   core/
     water_body.gd            # Node3D: tank AABB, owns subsystems, quality tier, publishes globals
     water_optics.gd          # Resource: absorption σa(rgb), scattering σs(rgb), phase g, IOR, dispersion
@@ -79,7 +79,15 @@ res://water/
     water_common.glsl        # Phase fns, Beer–Lambert, IGN/R2, exp stepping (RD side)
     water_common.gdshaderinc # Same math for spatial shaders
     underwater.gdshaderinc   # caustics() + water_fog() for decor/fish/particle materials
+  plugin.cfg, plugin.gd      # EditorPlugin: declares the water_* [shader_globals] on enable
+
+res://demo/                  # Aquarium demo scene and its helper scripts (not part of the addon)
+res://tests/                 # Headless verify_p*.gd checks and shot_demo.gd
 ```
+
+To reuse the water in another project, copy `addons/water/` and enable the **Water** plugin
+(Project Settings → Plugins). Enabling it adds the global shader parameters listed in
+`WaterGlobals.DECLARATIONS`; disabling it removes them.
 
 Two parallel "common" files are unavoidable: RD GLSL and `.gdshader` cannot include each other. Keep both small and mirror them by hand.
 
@@ -175,7 +183,7 @@ Forward+ is required for compute and the Compositor. On Compatibility/Mobile, fa
 3. **P2 Volume:** CompositorEffect march + composite (no temporal yet), plus `water_fog()` for transparents.
 4. **P3 Caustics:** light-depth bake, photon splat, denoise, `underwater.gdshaderinc`, caustic god rays in the volume.
 5. **P4 Polish:** temporal + à-trous for the volume, true-RGB caustics, a meniscus/foam line at the glass, bubbles, and tier switching.
-   - Done: `volume_temporal.glsl` (reprojects through tank space, rejects on depth mismatch, 3×3 neighbourhood clamp) and `volume_denoise.glsl` (depth-aware à-trous). True-RGB caustics use one r32ui photon image with three stacked bands resolved to RGBA32F. The meniscus and foam line live in `water_surface.gdshader`. `water/bubbles/` has a GPUParticles3D stream shaded with `water_fog()`. `WaterBody.set_tier()` handles tier switching (keys 1/2/3 in the demo). Check with `water/tests/verify_p4.gd`.
+   - Done: `volume_temporal.glsl` (reprojects through tank space, rejects on depth mismatch, 3×3 neighbourhood clamp) and `volume_denoise.glsl` (depth-aware à-trous). True-RGB caustics use one r32ui photon image with three stacked bands resolved to RGBA32F. The meniscus and foam line live in `water_surface.gdshader`. `addons/water/bubbles/` has a GPUParticles3D stream shaded with `water_fog()`. `WaterBody.set_tier()` handles tier switching (keys 1/2/3 in the demo). Check with `tests/verify_p4.gd`.
 
 ## 9. Issues in the current demo code (addressed by P0)
 - `if (new_v < 0.0) new_v = 0.0;` clips every trough, so the physics is wrong (only positive waves survive).

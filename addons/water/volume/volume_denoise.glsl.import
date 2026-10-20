@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://d3ec24masy0vs"
+path="res://.godot/imported/volume_denoise.glsl-5099daa1f5c839faaa16bfc9ab222e27.res"
+
+[deps]
+
+source_file="res://addons/water/volume/volume_denoise.glsl"
+dest_files=["res://.godot/imported/volume_denoise.glsl-5099daa1f5c839faaa16bfc9ab222e27.res"]
+
+[params]
+

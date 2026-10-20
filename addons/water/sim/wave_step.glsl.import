@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cuy3p3fumg0t"
+path="res://.godot/imported/wave_step.glsl-60c6bf77ac45ddadefd5fb7b35d56502.res"
+
+[deps]
+
+source_file="res://addons/water/sim/wave_step.glsl"
+dest_files=["res://.godot/imported/wave_step.glsl-60c6bf77ac45ddadefd5fb7b35d56502.res"]
+
+[params]
+

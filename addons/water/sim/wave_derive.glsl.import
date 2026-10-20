@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dfk8m3bwrqo45"
+path="res://.godot/imported/wave_derive.glsl-3934d10e10c18f34291e1eb066c9b5c9.res"
+
+[deps]
+
+source_file="res://addons/water/sim/wave_derive.glsl"
+dest_files=["res://.godot/imported/wave_derive.glsl-3934d10e10c18f34291e1eb066c9b5c9.res"]
+
+[params]
+

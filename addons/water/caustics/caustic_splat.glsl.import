@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c3uspl7jao6yu"
+path="res://.godot/imported/caustic_splat.glsl-eb9c32e29ebcdfcfa5cd6c7d94959201.res"
+
+[deps]
+
+source_file="res://addons/water/caustics/caustic_splat.glsl"
+dest_files=["res://.godot/imported/caustic_splat.glsl-eb9c32e29ebcdfcfa5cd6c7d94959201.res"]
+
+[params]
+
