@@ -27,6 +27,9 @@ extends GPUParticles3D
 
 const SHADER := preload("res://addons/water/bubbles/bubble.gdshader")
 
+## Runtime multiplier on pop_strength (0..1); a driver can fade pops out when idle.
+var pop_scale := 1.0
+
 var _pop_timer := 0.0
 
 
@@ -93,7 +96,7 @@ func _process(delta: float) -> void:
 		m.set_shader_parameter(&"sun_dir_world", to_light)
 		m.set_shader_parameter(&"sun_color", key.light_color.srgb_to_linear() * key.light_energy
 				if key.is_visible_in_tree() else Color.BLACK)
-	if Engine.is_editor_hint() or not emitting or pop_rate <= 0.0:
+	if Engine.is_editor_hint() or not emitting or pop_rate <= 0.0 or pop_scale <= 0.0:
 		return
 	_pop_timer += delta
 	var interval := 1.0 / pop_rate
@@ -104,4 +107,4 @@ func _process(delta: float) -> void:
 		local.x += randf_range(-0.012, 0.012)
 		local.z += randf_range(-0.012, 0.012)
 		local.y = body.water_depth
-		body.disturb(body.global_transform * local, 0.006, pop_strength)
+		body.disturb(body.global_transform * local, 0.006, pop_strength * pop_scale)

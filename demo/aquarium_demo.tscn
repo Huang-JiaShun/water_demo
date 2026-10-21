@@ -142,6 +142,20 @@ shader_parameter/roughness_val = 0.02
 [sub_resource type="BoxMesh" id="GlassSide"]
 size = Vector3(0.006, 0.5, 0.45)
 
+[sub_resource type="BoxMesh" id="FrameX"]
+size = Vector3(1.24, 0.008, 0.012)
+
+[sub_resource type="BoxMesh" id="FrameZ"]
+size = Vector3(0.012, 0.008, 0.48)
+
+[sub_resource type="BoxMesh" id="FramePost"]
+size = Vector3(0.008, 0.5, 0.008)
+
+[sub_resource type="StandardMaterial3D" id="FrameMat"]
+transparency = 3
+albedo_color = Color(0.1, 0.1, 0.11, 0.45)
+roughness = 0.5
+
 [sub_resource type="BoxMesh" id="HoodMesh"]
 size = Vector3(1, 0.018, 0.07)
 
@@ -272,6 +286,56 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.603, 0.25, 0)
 cast_shadow = 0
 mesh = SubResource("GlassSide")
 surface_material_override/0 = SubResource("GlassMat")
+
+[node name="Frame" type="Node3D" parent="WaterBody"]
+
+[node name="BottomFront" type="MeshInstance3D" parent="WaterBody/Frame"]
+cast_shadow = 3
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.0075, 0.226)
+mesh = SubResource("FrameX")
+surface_material_override/0 = SubResource("FrameMat")
+
+[node name="BottomBack" type="MeshInstance3D" parent="WaterBody/Frame"]
+cast_shadow = 3
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.0075, -0.226)
+mesh = SubResource("FrameX")
+surface_material_override/0 = SubResource("FrameMat")
+
+[node name="BottomLeft" type="MeshInstance3D" parent="WaterBody/Frame"]
+cast_shadow = 3
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.601, -0.0075, 0)
+mesh = SubResource("FrameZ")
+surface_material_override/0 = SubResource("FrameMat")
+
+[node name="BottomRight" type="MeshInstance3D" parent="WaterBody/Frame"]
+cast_shadow = 3
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.601, -0.0075, 0)
+mesh = SubResource("FrameZ")
+surface_material_override/0 = SubResource("FrameMat")
+
+[node name="PostFL" type="MeshInstance3D" parent="WaterBody/Frame"]
+cast_shadow = 3
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.608, 0.25, 0.233)
+mesh = SubResource("FramePost")
+surface_material_override/0 = SubResource("FrameMat")
+
+[node name="PostFR" type="MeshInstance3D" parent="WaterBody/Frame"]
+cast_shadow = 3
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.608, 0.25, 0.233)
+mesh = SubResource("FramePost")
+surface_material_override/0 = SubResource("FrameMat")
+
+[node name="PostBL" type="MeshInstance3D" parent="WaterBody/Frame"]
+cast_shadow = 3
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.608, 0.25, -0.233)
+mesh = SubResource("FramePost")
+surface_material_override/0 = SubResource("FrameMat")
+
+[node name="PostBR" type="MeshInstance3D" parent="WaterBody/Frame"]
+cast_shadow = 3
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.608, 0.25, -0.233)
+mesh = SubResource("FramePost")
+surface_material_override/0 = SubResource("FrameMat")
 
 [node name="Hood" type="MeshInstance3D" parent="WaterBody" unique_id=975066423]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.6, 0)

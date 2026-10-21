@@ -84,6 +84,17 @@ vec3 water_caustic_tap(vec2 uv, vec2 shift) {
 			textureLod(water_caustic_tex, uv + shift, 0.0).b);
 }
 
+// Soft visibility of the key light through the light-depth map at uv (1 lit,
+// 0 behind an occluder or entering through a wall). The ramp widens with the
+// occluder-to-receiver gap times the light's spread, like PCSS, and never drops
+// below a few texels / 1.5 cm so the wall line doesn't cut the pattern off hard.
+float water_light_vis(vec2 uv, float dist, float spread) {
+	float blocked = textureLod(water_light_depth_tex, uv, 0.0).r;
+	float texel = water_tank_size.x / float(textureSize(water_light_depth_tex, 0).x);
+	float soft = max(max(dist - blocked, 0.0) * spread, max(1.5 * texel, 0.015));
+	return 1.0 - smoothstep(blocked, blocked + soft, dist);
+}
+
 // Per-channel caustic gain of the key light reaching world_pos (1 = no caustic effect).
 // Points above the surface, outside the footprint or behind a light-depth
 // occluder return 1, leaving shadowing to Godot's own shadow map.
@@ -97,8 +108,6 @@ vec3 water_caustics(vec3 world_pos) {
 	float dist = ent.z;
 	vec2 uv = water_tank_uv(vec3(ent.x, 0.0, ent.y));
 	if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec3(1.0);
-	float blocked = textureLod(water_light_depth_tex, uv, 0.0).r;
-	if (dist > blocked + 0.01) return vec3(1.0);
 
 	vec2 shift = vec2(0.0);
 	if (water_caustic_params.z < 0.5) {
@@ -108,6 +117,7 @@ vec3 water_caustics(vec3 world_pos) {
 	}
 	vec4 shape = water_light_shape;
 	vec3 g = vec3(0.0);
+	float vis = 0.0;
 	if (water_light.w > 0.5) {
 		// LED bar: every LED casts its own copy of the pattern. Moving the source by
 		// x moves q's entry point by x * k / (1 + k), k = D / (n h) (paraxial), so the
@@ -125,8 +135,10 @@ vec3 water_caustics(vec3 world_pos) {
 			float x = n > 1 ? (float(j) / float(n - 1) * 2.0 - 1.0) * shape.x : 0.0;
 			vec2 o = axis * x * m / water_tank_size.xz;
 			g += water_caustic_tap(uv + o + w_uv, shift) + water_caustic_tap(uv + o - w_uv, shift);
+			vis += water_light_vis(uv + o + w_uv, dist, 0.0) + water_light_vis(uv + o - w_uv, dist, 0.0);
 		}
 		g /= float(2 * n);
+		vis /= float(2 * n);
 	} else {
 		// Sun-disc penumbra: each point sees the surface through a cone of half-angle
 		// atan(blur), so the caustic is the texture averaged over a disc of radius
@@ -138,8 +150,10 @@ vec3 water_caustics(vec3 world_pos) {
 		for (int j = -1; j < 8; j++) {
 			vec2 o = j < 0 ? vec2(0.0) : TAPS[j] * 0.7 * r_uv;
 			g += water_caustic_tap(uv + o, shift);
+			vis += water_light_vis(uv + o, dist, shape.x);
 		}
 		g /= 9.0;
+		vis /= 9.0;
 	}
 	// Fade in just below the surface, where the pattern has not formed yet.
 	float fade = smoothstep(0.0, 0.02, depth) * water_caustic_params.x;
@@ -147,6 +161,8 @@ vec3 water_caustics(vec3 world_pos) {
 	// the entry point leaves the tank (visible as a sharp line along the glass).
 	vec2 edge_m = min(uv, 1.0 - uv) * water_tank_size.xz;
 	fade *= smoothstep(0.0, 0.03, min(edge_m.x, edge_m.y));
+	// Fade the pattern across the occluder / wall penumbra instead of a binary cut.
+	fade *= vis;
 	// Floor bounce: light the floor scatters up is partly reflected back down by
 	// the underside of the surface (TIR + Fresnel). It is pattern-free, so a share
 	// fill = albedo * R_int (computed by WaterBody, ~0.19 for sand) of the total
