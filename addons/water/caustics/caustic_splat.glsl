@@ -33,7 +33,7 @@ layout(push_constant, std430) uniform Params {
 	int steps;    // march steps
 	vec4 light;   // xyz = Lw (toward the light, below the surface, unit), w = ior
 	vec4 tank;    // x = half size X, y = rest surface height, z = half size Z, w = wave height scale
-	vec4 misc;    // x = fixed-point energy of one photon, y = IOR spread (blue - red), z = channel count, w = light layer
+	vec4 misc;    // x = fixed-point energy of one photon, y = IOR spread (blue - red), z = channel count, w = unused
 	vec4 lpos;    // xyz = tank-space key light position, w = 1: local light (else directional, light.xyz)
 } p;
 
@@ -49,15 +49,9 @@ vec3 light_coords(vec3 q) {
 	return vec3(xz_to_uv(e.xy), e.z);
 }
 
-// Multi-light: every light has its own layer, stacked vertically (rows
-// [layer * size.y, (layer + 1) * size.y)) in light_depth and in the photon image.
-int layer() {
-	return int(p.misc.w);
-}
-
 float depth_at(vec2 uv) {
 	ivec2 c = clamp(ivec2(floor(uv * vec2(p.size))), ivec2(0), p.size - 1);
-	return texelFetch(light_depth, c + ivec2(0, layer() * p.size.y), 0).r;
+	return texelFetch(light_depth, c, 0).r;
 }
 
 // Fresnel transmittance (Schlick) from air into water.
@@ -74,8 +68,7 @@ void splat(vec2 uv, float energy, int band) {
 	ivec2 os[4] = ivec2[4](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(1, 1));
 	for (int i = 0; i < 4; i++) {
 		// Clamp rather than drop, so edge texels keep their full share.
-		// Photon bands: layer-major, then channel.
-		ivec2 t = clamp(c + os[i], ivec2(0), p.size - 1) + ivec2(0, (layer() * int(p.misc.z) + band) * p.size.y);
+		ivec2 t = clamp(c + os[i], ivec2(0), p.size - 1) + ivec2(0, band * p.size.y);
 		uint v = uint(energy * ws[i] * p.misc.x + 0.5);
 		if (v > 0u) {
 			imageAtomicAdd(photons, t, v);

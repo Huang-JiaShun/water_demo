@@ -24,10 +24,9 @@ const VIEW_MAX_PATH := &"water_view_max_path"   # float      longest path (m) th
 const CAUSTIC_TEX := &"water_caustic_tex"       # sampler2D  RGBA32F gain vs calm water, per rest-surface entry point
 const LIGHT_DEPTH_TEX := &"water_light_depth_tex" # sampler2D R32F distance along the refracted sun ray to the first solid
 const CAUSTIC_PARAMS := &"water_caustic_params" # vec4       x = strength, y = dispersion (IOR spread), z = 1 if true RGB, w = diffuse fill
-const LIGHT_COUNT := &"water_light_count"       # int        key lights in use (<= WaterCaustics.MAX_LIGHTS)
-const LIGHTS := &"water_lights"                 # mat4       column i: sun: refracted tank dir toward it, w = 0; local: tank pos, w = 1
-const LIGHT_SHAPES := &"water_light_shapes"     # mat4       column i: sun: x = tan of in-water half-angle; local: x/y = bar half length/width, zw = bar axis
-const LIGHT_LEDS := &"water_light_leds"         # vec4       per light: LEDs sampled along the bar
+const LIGHT := &"water_light"                   # vec4       caustic light. sun: refracted tank dir toward it, w = 0; local: tank pos, w = 1; none: w = -1
+const LIGHT_SHAPE := &"water_light_shape"       # vec4       sun: x = tan of in-water half-angle; local: x/y = bar half length/width, zw = bar axis
+const LIGHT_LEDS := &"water_light_leds"         # float      LEDs sampled along the bar
 
 ## Declarations (type, default) the water plugin registers in project.godot
 ## [shader_globals] when enabled. Keep in sync with the constants above.
@@ -47,10 +46,9 @@ const DECLARATIONS := {
 	CAUSTIC_TEX: ["sampler2D", ""],
 	LIGHT_DEPTH_TEX: ["sampler2D", ""],
 	CAUSTIC_PARAMS: ["vec4", Vector4(1, 0.01, 0, 0)],
-	LIGHT_COUNT: ["int", 0],
-	LIGHTS: ["mat4", Projection(Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0))],
-	LIGHT_SHAPES: ["mat4", Projection(Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0))],
-	LIGHT_LEDS: ["vec4", Vector4.ONE],
+	LIGHT: ["vec4", Vector4(0, 1, 0, -1)],
+	LIGHT_SHAPE: ["vec4", Vector4(0, 0, 1, 0)],
+	LIGHT_LEDS: ["float", 1.0],
 }
 
 ## Static-ish data: textures, dimensions, optics. Call when any of them change.
@@ -85,20 +83,16 @@ static func publish_transform(body: WaterBody) -> void:
 	RenderingServer.global_shader_parameter_set(
 			WORLD_TO_TANK, Projection(body.global_transform.affine_inverse()))
 	var c := body.caustics
-	var lights := Projection(Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0), Vector4(0, 1, 0, 0))
-	var shapes := Projection(Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0), Vector4(0, 0, 1, 0))
-	var leds := Vector4.ONE
-	var count := 0
-	if c:
-		count = c.light_count()
+	var light := Vector4(0, 1, 0, -1)
+	var shape := Vector4(0, 0, 1, 0)
+	var leds := 1.0
+	if c and c.lit:
 		var info := body.key_light_info()
-		for i in count:
-			lights[i] = c.light_keys[i]
-			shapes[i] = info[i].shape
-			leds[i] = info[i].leds
-	RenderingServer.global_shader_parameter_set(LIGHT_COUNT, count)
-	RenderingServer.global_shader_parameter_set(LIGHTS, lights)
-	RenderingServer.global_shader_parameter_set(LIGHT_SHAPES, shapes)
+		light = c.light_key
+		shape = info[0].shape
+		leds = info[0].leds
+	RenderingServer.global_shader_parameter_set(LIGHT, light)
+	RenderingServer.global_shader_parameter_set(LIGHT_SHAPE, shape)
 	RenderingServer.global_shader_parameter_set(LIGHT_LEDS, leds)
 	var disp := body.optics.dispersion if body.optics else 0.0
 	var rgb := 1.0 if c and c.is_true_rgb() else 0.0

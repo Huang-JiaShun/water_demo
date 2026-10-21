@@ -6,9 +6,6 @@
 //           vertically in the photon image.
 //   mode 1: one à-trous iteration (B3-spline 5x5, holes of `step` texels) src -> dst
 // Gain is irradiance relative to a flat surface: 1 = calm water.
-// Lights: gl_GlobalInvocationID.z = light layer. Layers are stacked vertically in
-// the gain images (rows layer * size.y ...); photon bands are layer-major, then
-// channel. The filter never crosses a layer boundary.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -31,12 +28,10 @@ void main() {
 	if (any(greaterThanEqual(c, p.size))) {
 		return;
 	}
-	int layer = int(gl_GlobalInvocationID.z);
-	ivec2 lo = ivec2(0, layer * p.size.y);
 	if (p.mode == 0) {
 		vec3 g;
 		int nch = p.channels > 1.5 ? 3 : 1;
-		ivec2 pc0 = c + ivec2(0, layer * nch * p.size.y);
+		ivec2 pc0 = c;
 		if (nch == 3) {
 			for (int ch = 0; ch < 3; ch++) {
 				ivec2 pc = pc0 + ivec2(0, ch * p.size.y);
@@ -47,7 +42,7 @@ void main() {
 			g = vec3(float(imageLoad(photons, pc0).r) * p.inv_scale);
 			imageStore(photons, pc0, uvec4(0u));
 		}
-		imageStore(dst, c + lo, vec4(g, 1.0));
+		imageStore(dst, c, vec4(g, 1.0));
 		return;
 	}
 	const float k[3] = float[3](0.375, 0.25, 0.0625);
@@ -60,9 +55,9 @@ void main() {
 				continue;
 			}
 			float w = k[abs(i)] * k[abs(j)];
-			sum += w * imageLoad(src, q + lo).rgb;
+			sum += w * imageLoad(src, q).rgb;
 			wsum += w;
 		}
 	}
-	imageStore(dst, c + lo, vec4(sum / wsum, 1.0));
+	imageStore(dst, c, vec4(sum / wsum, 1.0));
 }

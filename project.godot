@@ -41,78 +41,74 @@ lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
 [shader_globals]
 
 water_wave_tex={
-"type": "sampler2D",
-"value": ""
+&"type": "sampler2D",
+&"value": ""
 }
 water_world_to_tank={
-"type": "mat4",
-"value": Projection(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+&"type": "mat4",
+&"value": Projection(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
 }
 water_tank_size={
-"type": "vec3",
-"value": Vector3(1.2, 0.5, 0.45)
+&"type": "vec3",
+&"value": Vector3(1.2, 0.5, 0.45)
 }
 water_surface_height={
-"type": "float",
-"value": 0.42
+&"type": "float",
+&"value": 0.42
 }
 water_sigma_a={
-"type": "vec3",
-"value": Vector3(0.45, 0.07, 0.03)
+&"type": "vec3",
+&"value": Vector3(0.45, 0.07, 0.03)
 }
 water_sigma_s={
-"type": "vec3",
-"value": Vector3(0.04, 0.05, 0.06)
+&"type": "vec3",
+&"value": Vector3(0.04, 0.05, 0.06)
 }
 water_phase_g={
-"type": "float",
-"value": 0.85
+&"type": "float",
+&"value": 0.85
 }
 water_ior={
-"type": "float",
-"value": 1.333
+&"type": "float",
+&"value": 1.333
 }
 water_height_scale={
-"type": "float",
-"value": 3.0
+&"type": "float",
+&"value": 3.0
 }
 water_view_tint={
-"type": "vec4",
-"value": Vector4(0.05, 0.32, 0.36, 8)
+&"type": "vec4",
+&"value": Vector4(0.05, 0.32, 0.36, 8)
 }
 water_view_extinction={
-"type": "vec3",
-"value": Vector3(0.49, 0.12, 0.09)
+&"type": "vec3",
+&"value": Vector3(0.49, 0.12, 0.09)
 }
 water_view_max_path={
-"type": "float",
-"value": 3.0
+&"type": "float",
+&"value": 3.0
 }
 water_caustic_tex={
-"type": "sampler2D",
-"value": ""
+&"type": "sampler2D",
+&"value": ""
 }
 water_light_depth_tex={
-"type": "sampler2D",
-"value": ""
+&"type": "sampler2D",
+&"value": ""
 }
 water_caustic_params={
-"type": "vec4",
-"value": Vector4(1, 0.01, 0, 0)
+&"type": "vec4",
+&"value": Vector4(1, 0.01, 0, 0)
 }
-water_light_count={
-"type": "int",
-"value": 0
+water_light={
+&"type": "vec4",
+&"value": Vector4(0, 1, 0, -1)
 }
-water_lights={
-"type": "mat4",
-"value": Projection(0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0)
-}
-water_light_shapes={
-"type": "mat4",
-"value": Projection(0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0)
+water_light_shape={
+&"type": "vec4",
+&"value": Vector4(0, 0, 1, 0)
 }
 water_light_leds={
-"type": "vec4",
-"value": Vector4(1, 1, 1, 1)
+&"type": "float",
+&"value": 1.0
 }

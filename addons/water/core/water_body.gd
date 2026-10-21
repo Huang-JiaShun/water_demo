@@ -76,8 +76,10 @@ const SURFACE_SHADER := preload("../surface/water_surface.gdshader")
 @export_group("Lighting")
 ## The tank's own lights: OmniLight3D / SpotLight3D a few cm above the water
 ## (hood LED bars, spot pendants). Each visible one above the surface is a key
-## light for caustics, god rays and bubble glints (at most
-## WaterCaustics.MAX_LIGHTS, including `sun`). Room lights not listed stay
+## light for volume in-scatter (at most WaterVolumeEffect.MAX_LIGHTS, including
+## `sun`). The caustic light is `sun` when it reaches the water, otherwise the
+## brightest tank light. It is the only one with
+## caustics, caustic god rays and bubble glints. Room lights not listed stay
 ## pattern-free fill.
 ## Each light is an LED bar along its local X. Per-light overrides via node
 ## metadata: "led_length" (m), "led_width" (m), "leds" (int); otherwise the
@@ -102,8 +104,8 @@ const SURFACE_SHADER := preload("../surface/water_surface.gdshader")
 	set(v):
 		tank_light_leds = v
 		_queue_publish()
-## Optional distant light (window sun, outdoor pond). A key light when visible,
-## alongside the tank lights.
+## Optional distant light (window sun, outdoor pond). When visible and above the
+## horizon it is the caustic light; the tank lights still light the volume.
 @export var sun: DirectionalLight3D
 
 @export_group("Volume")
@@ -120,7 +122,7 @@ const SURFACE_SHADER := preload("../surface/water_surface.gdshader")
 @export_group("Caustics")
 ## Enables the caustic light pattern (ripple shadows) on the floor and submerged
 ## objects. When off, underwater surfaces get uniform light and the caustic pass is skipped.
-@export var caustics_enabled := false:
+@export var caustics_enabled := true:
 	set(v):
 		caustics_enabled = v
 		_queue_publish()
@@ -158,7 +160,7 @@ func sun_half_angle_tan() -> float:
 	return tan(deg_to_rad(maxf(deg, 0.0) * 0.5) / n)
 
 
-## The key lights in use this frame, in caustic layer order. Each entry:
+## The key lights in use this frame, caustic light first. Each entry:
 ## {light, local, pos (tank, local) / dir (tank, toward the sun), shape: Vector4, leds: int}.
 ## shape: sun x = tan of the in-water half-angle; local x/y = bar half length/width
 ## (tank units), zw = bar axis (tank xz). Lights that cannot reach the water are
@@ -168,8 +170,8 @@ func key_light_info() -> Array[Dictionary]:
 	var inv := global_transform.affine_inverse()
 	var sc := global_transform.basis.get_scale().x
 	for l in tank_lights:
-		if out.size() >= WaterCaustics.MAX_LIGHTS:
-			return out
+		if out.size() >= WaterVolumeEffect.MAX_LIGHTS:
+			break
 		if l == null or not l.is_visible_in_tree():
 			continue
 		var p := inv * l.global_position
@@ -183,22 +185,29 @@ func key_light_info() -> Array[Dictionary]:
 		var leds: int = l.get_meta(&"leds", tank_light_leds) if length > 0.0 else 1
 		out.append({light = l, local = true, pos = p,
 				shape = Vector4(length * 0.5 / sc, width * 0.5 / sc, a.x, a.y), leds = leds})
-	if sun and sun.is_visible_in_tree() and out.size() < WaterCaustics.MAX_LIGHTS:
+	if sun and sun.is_visible_in_tree() and out.size() < WaterVolumeEffect.MAX_LIGHTS:
 		var d := (inv.basis * sun.global_transform.basis.z).normalized()
 		if d.y > 1e-3:
 			out.append({light = sun, local = false, dir = d,
 					shape = Vector4(sun_half_angle_tan(), 0.0, 1.0, 0.0), leds = 1})
+	# The caustic light goes first: the sun when it reaches the water, otherwise
+	# the brightest tank light.
+	var best := 0
+	for i in out.size():
+		if not out[i].local:
+			best = i
+			break
+		if (out[i].light as Light3D).light_energy > (out[best].light as Light3D).light_energy:
+			best = i
+	if best > 0:
+		out.push_front(out.pop_at(best))
 	return out
 
 
-## The brightest key light, or null (bubble glints use a single light).
+## The caustic light (the sun, else the brightest tank light), or null. key_light_info()[0].
 func key_light() -> Light3D:
-	var best: Light3D = null
-	for k in key_light_info():
-		var l: Light3D = k.light
-		if best == null or l.light_energy > best.light_energy:
-			best = l
-	return best
+	var info := key_light_info()
+	return info[0].light if not info.is_empty() else null
 
 var sim: WaveSim
 var volume: WaterVolumeEffect
@@ -279,16 +288,13 @@ func get_caustic_size() -> Vector2i:
 
 
 ## Forces a light-depth re-bake (call after moving decor).
-func bake_light_depth(layers := PackedInt32Array()) -> void:
+func bake_light_depth() -> void:
 	if caustics == null or not caustics.lit or not is_inside_tree():
 		return
-	if layers.is_empty():
-		layers = PackedInt32Array(range(caustics.light_count()))
-	for i in layers:
-		var key := caustics.light_keys[i]
-		caustics.upload_light_depth(i,
-				LightDepthBaker.bake(get_world_3d().direct_space_state, global_transform, tank_size, water_depth,
-						caustics.size, key, caustic_mask, optics.ior if optics else 1.333), key)
+	var key := caustics.light_key
+	caustics.upload_light_depth(
+			LightDepthBaker.bake(get_world_3d().direct_space_state, global_transform, tank_size, water_depth,
+					caustics.size, key, caustic_mask, optics.ior if optics else 1.333), key)
 
 func world_to_tank(p: Vector3) -> Vector3:
 	return global_transform.affine_inverse() * p
@@ -444,9 +450,10 @@ func _detach_volume() -> void:
 func _update_caustics() -> void:
 	if not caustics_enabled or caustics == null or optics == null or sim == null:
 		return
-	var stale := caustics.set_lights(key_light_info(), water_depth, optics.ior)
-	if not stale.is_empty() and _physics_ready:
-		bake_light_depth(stale)
+	var info := key_light_info()
+	var stale := caustics.set_light(info[0] if not info.is_empty() else {}, water_depth, optics.ior)
+	if stale and _physics_ready:
+		bake_light_depth()
 	caustics.update(sim.output_texture.texture_rd_rid, tank_size, water_depth, optics.ior, wave_height_scale,
 			optics.dispersion)
 

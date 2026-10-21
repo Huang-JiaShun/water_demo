@@ -15,8 +15,8 @@ extends CompositorEffect
 ## Main thread: WaterBody calls set_frame_data() every frame.
 ## Render thread: _render_callback() only.
 ##
-## Sun in-scatter is modulated by the caustic gain and light-depth visibility
-## (caustic-patterned god rays). Temporal runs for single-view rendering only.
+## The caustic light's (light 0) in-scatter is modulated by the caustic gain and
+## light-depth visibility (caustic-patterned god rays). Temporal runs for single-view rendering only.
 
 const MARCH_SHADER := "res://addons/water/volume/volume_march.glsl"
 const COMPOSITE_SHADER := "res://addons/water/volume/volume_composite.glsl"
@@ -130,7 +130,7 @@ func set_quality(downsample: int, steps: int, temporal := true, denoise := 0) ->
 
 
 ## world_to_tank: tank inverse transform. surface_height, tank_size: tank units.
-## lights: key lights in caustic layer order (at most MAX_LIGHTS), each
+## lights: key lights, caustic light first (at most MAX_LIGHTS), each
 ##   {local = false, dir = Vector3 (tank space, toward the sun), color = Color} or
 ##   {local = true, pos = Vector3 (tank space), color, range = m, decay = exponent}.
 ## color is linear colour * energy. ambient: linear.

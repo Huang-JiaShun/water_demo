@@ -37,9 +37,9 @@ void fragment() {
 
 void light() {
 	float ndl = max(dot(NORMAL, LIGHT), 0.0);
-	// Caustics belong to the water's key lights only (suns and tank hood lights it
+	// Caustics belong to the water's key light only (the sun or tank light it
 	// was told about). Other lights (room fill) stay pattern-free.
-	int key = water_key_light(v_world, (INV_VIEW_MATRIX * vec4(LIGHT, 0.0)).xyz, LIGHT_IS_DIRECTIONAL);
-	vec3 k = water_caustics(v_world, key);
+	vec3 k = water_key_light(v_world, (INV_VIEW_MATRIX * vec4(LIGHT, 0.0)).xyz, LIGHT_IS_DIRECTIONAL)
+			? water_caustics(v_world) : vec3(1.0);
 	DIFFUSE_LIGHT += LIGHT_COLOR * ATTENUATION * ndl * k / PI;
 }

@@ -25,12 +25,12 @@ layout(rgba16f, set = 0, binding = 2) uniform restrict writeonly image2D trans_o
 layout(set = 0, binding = 3, std140) uniform Params {
 	mat4 inv_proj;      // NDC (Vulkan, reversed-Z) -> view
 	mat4 view_to_tank;  // view -> tank local (origin = floor centre)
-	vec4 tank_max;      // xyz = (half size x, rest surface height, half size z), w = 1: god rays
+	vec4 tank_max;      // xyz = (half size x, rest surface height, half size z), w = 1: god rays (light 0 only)
 	vec4 sigma_a;       // xyz, w = phase g
 	vec4 sigma_s;       // xyz, w = ior
 	vec4 misc;          // x = scatter strength, y = frame index (jitter), z = step count, w = light count
 	vec4 ambient;       // rgb above-water ambient radiance
-	// Per key light (same order as the caustic layers):
+	// Per key light (light 0 = the caustic light):
 	vec4 light[MAX_LIGHTS];  // sun: xyz = toward it (tank, air side, unit), w = 0. local: xyz = tank pos, w = 1
 	vec4 color[MAX_LIGHTS];  // rgb = colour * energy (sun: irradiance)
 	vec4 atten[MAX_LIGHTS];  // local: x = 1 / range, y = attenuation exponent, z = tank units per metre
@@ -46,17 +46,11 @@ float omni_attenuation(float d, float inv_range, float decay) {
 	return nd * nd * pow(max(d, 1e-4), -decay);
 }
 
-// Caustics (P3). Both are indexed by the rest-surface entry point of the
-// refracted light ray, one layer per light stacked vertically; see
+// Caustics (P3), for the caustic light (light 0) only. Both are indexed by the
+// rest-surface entry point of the refracted light ray; see
 // water/caustics/caustics.gd.
 layout(set = 0, binding = 4) uniform sampler2D caustic_tex;     // rgb gain, 1 = calm water
 layout(set = 0, binding = 5) uniform sampler2D light_depth_tex; // distance to first solid
-
-// Layer-local uv -> stacked uv, clamped half a texel inside the layer.
-vec2 layer_uv(vec2 uv, int layer, float layer_h) {
-	uv.y = clamp(uv.y, 0.5 / layer_h, 1.0 - 0.5 / layer_h);
-	return vec2(uv.x, (uv.y + float(layer)) / float(MAX_LIGHTS));
-}
 
 const float PI = 3.14159265359;
 
@@ -127,7 +121,6 @@ void main() {
 		float eta = 1.0 / ior;
 		float f0 = pow((ior - 1.0) / (ior + 1.0), 2.0);
 		int n_lights = min(int(u.misc.w), MAX_LIGHTS);
-		float layer_h = float(textureSize(caustic_tex, 0).y) / float(MAX_LIGHTS);
 
 		// Phase: HG (Mie) + a little Rayleigh, blended toward isotropic by the
 		// single-scatter albedo as a cheap multiple-scattering approximation.
@@ -195,16 +188,15 @@ void main() {
 					sun = sun_in[li] * exp(-sig_t * dist);
 					ph_x = sun_ph[li];
 				}
-				if (u.tank_max.w > 0.5) {
+				if (li == 0 && u.tank_max.w > 0.5) {
 					// God rays: the caustic pattern and decor shadows carried along
 					// the light ray. Caustics are sharpest at their focal depth, so the
 					// shafts vary naturally with depth.
 					vec2 cuv = e / (2.0 * u.tank_max.xz) + 0.5;
 					vec3 vis = vec3(1.0);
 					if (all(greaterThanEqual(cuv, vec2(0.0))) && all(lessThanEqual(cuv, vec2(1.0)))) {
-						vec2 luv = layer_uv(cuv, li, layer_h);
-						float blocked = textureLod(light_depth_tex, luv, 0.0).r;
-						vis = dist > blocked + 0.005 ? vec3(0.0) : textureLod(caustic_tex, luv, 0.0).rgb;
+						float blocked = textureLod(light_depth_tex, cuv, 0.0).r;
+						vis = dist > blocked + 0.005 ? vec3(0.0) : textureLod(caustic_tex, cuv, 0.0).rgb;
 					}
 					sun *= vis;
 				}
