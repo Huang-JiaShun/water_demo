@@ -62,6 +62,17 @@ const SURFACE_SHADER := preload("../surface/water_surface.gdshader")
 	set(v):
 		wave_height_scale = v
 		_queue_publish()
+## Capillary rise at the glass: water climbs the walls over ~2-3 mm (capillary
+## length of water). Shared by the surface and the glass waterline.
+@export_range(0.0005, 0.02, 0.0001, "suffix:m") var meniscus_width := 0.0025:
+	set(v):
+		meniscus_width = v
+		_queue_publish()
+## Height the water climbs at the glass.
+@export_range(0.0, 0.01, 0.0001, "suffix:m") var meniscus_height := 0.002:
+	set(v):
+		meniscus_height = v
+		_queue_publish()
 ## Surface mesh using water_surface.gdshader. Tier switching toggles its
 ## high-precision refraction. Empty: the first child using that shader.
 @export var surface: GeometryInstance3D

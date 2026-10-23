@@ -112,3 +112,7 @@ water_light_leds={
 &"type": "float",
 &"value": 1.0
 }
+water_meniscus={
+&"type": "vec2",
+&"value": Vector2(0.0025, 0.002)
+}

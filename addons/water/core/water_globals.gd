@@ -27,6 +27,7 @@ const CAUSTIC_PARAMS := &"water_caustic_params" # vec4       x = strength, y = d
 const LIGHT := &"water_light"                   # vec4       caustic light. sun: refracted tank dir toward it, w = 0; local: tank pos, w = 1; none: w = -1
 const LIGHT_SHAPE := &"water_light_shape"       # vec4       sun: x = tan of in-water half-angle; local: x/y = bar half length/width, zw = bar axis
 const LIGHT_LEDS := &"water_light_leds"         # float      LEDs sampled along the bar
+const MENISCUS := &"water_meniscus"             # vec2       x = width (m), y = height the water climbs at the glass (m)
 
 ## Declarations (type, default) the water plugin registers in project.godot
 ## [shader_globals] when enabled. Keep in sync with the constants above.
@@ -49,6 +50,7 @@ const DECLARATIONS := {
 	LIGHT: ["vec4", Vector4(0, 1, 0, -1)],
 	LIGHT_SHAPE: ["vec4", Vector4(0, 0, 1, 0)],
 	LIGHT_LEDS: ["float", 1.0],
+	MENISCUS: ["vec2", Vector2(0.0025, 0.002)],
 }
 
 ## Static-ish data: textures, dimensions, optics. Call when any of them change.
@@ -65,6 +67,7 @@ static func publish(body: WaterBody) -> void:
 	RenderingServer.global_shader_parameter_set(TANK_SIZE, body.tank_size)
 	RenderingServer.global_shader_parameter_set(SURFACE_HEIGHT, body.water_depth)
 	RenderingServer.global_shader_parameter_set(HEIGHT_SCALE, body.wave_height_scale)
+	RenderingServer.global_shader_parameter_set(MENISCUS, Vector2(body.meniscus_width, body.meniscus_height))
 	var o := body.optics
 	if o:
 		RenderingServer.global_shader_parameter_set(SIGMA_A, o.absorption)

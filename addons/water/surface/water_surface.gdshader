@@ -33,10 +33,8 @@ group_uniforms shading;
 uniform float roughness : hint_range(0.0, 1.0) = 0.03;
 
 group_uniforms meniscus;
-/// Capillary rise at the glass: water climbs the walls over ~2-3 mm (capillary length of water).
-uniform float meniscus_width : hint_range(0.0005, 0.02) = 0.0025;
-/// Height the water climbs at the wall (m).
-uniform float meniscus_height : hint_range(0.0, 0.01) = 0.002;
+// The capillary rise itself (width, height) is the water_meniscus global
+// (WaterBody), shared with the glass so its waterline meets the curved surface.
 /// Thin bright foam/bubble line along the glass, broken up by noise.
 uniform float foam_line_strength : hint_range(0.0, 1.0) = 0.35;
 uniform float foam_line_width : hint_range(0.0005, 0.03) = 0.004;
@@ -99,26 +97,6 @@ float ign(vec2 p) {
 	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
 }
 
-// Distance (m) from a tank-space point to the nearest side wall, and the unit
-// XZ direction toward that wall.
-float wall_distance(vec2 xz, out vec2 to_wall) {
-	vec2 half_size = water_tank_size.xz * 0.5;
-	vec2 d = half_size - abs(xz);
-	if (d.x < d.y) {
-		to_wall = vec2(sign(xz.x), 0.0);
-		return max(d.x, 0.0);
-	}
-	to_wall = vec2(0.0, sign(xz.y));
-	return max(d.y, 0.0);
-}
-
-// Meniscus profile: height above rest and its slope toward the wall.
-// Exponential capillary profile h(d) = H * exp(-d / w).
-vec2 meniscus(float d) {
-	float e = exp(-d / meniscus_width);
-	return vec2(meniscus_height * e, meniscus_height * e / meniscus_width);
-}
-
 // --- stages ---------------------------------------------------------------------
 
 void vertex() {
@@ -126,8 +104,8 @@ void vertex() {
 	v_tank_pos = water_tank_pos(world);
 	// The mesh is a child of WaterBody with no rotation, so local +Y is tank +Y.
 	vec2 to_wall;
-	float dw = wall_distance(v_tank_pos.xz, to_wall);
-	VERTEX.y += water_sample_wave(water_tank_uv(v_tank_pos)).x * water_height_scale + meniscus(dw).x;
+	float dw = water_wall_distance(v_tank_pos.xz, to_wall);
+	VERTEX.y += water_sample_wave(water_tank_uv(v_tank_pos)).x * water_height_scale + water_meniscus_at(dw).x;
 }
 
 void fragment() {
@@ -136,9 +114,9 @@ void fragment() {
 	float wave_slope = length(slope);
 	vec2 xz = v_tank_pos.xz;
 	vec2 to_wall;
-	float dw = wall_distance(xz, to_wall);
+	float dw = water_wall_distance(xz, to_wall);
 	// The surface rises toward the glass, so its gradient points at the wall.
-	slope += to_wall * meniscus(dw).y;
+	slope += to_wall * water_meniscus_at(dw).y;
 	vec2 da = texture(detail_normal, xz * detail_scale_a + TIME * detail_speed_a).xy * 2.0 - 1.0;
 	vec2 db = texture(detail_normal, xz * detail_scale_b + TIME * detail_speed_b).xy * 2.0 - 1.0;
 	vec3 n_tank = normalize(vec3(-slope.x, 1.0, -slope.y)

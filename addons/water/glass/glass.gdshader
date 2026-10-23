@@ -23,11 +23,20 @@ void fragment() {
 	// Ray from the CAMERA (not this glass face) so every overlapping pane
 	// computes the identical path — result is independent of the
 	// transparent sort order, which flips as the camera moves.
+	// Live surface height at this glass point: waves plus the meniscus, the same
+	// displacement the surface shader applies, so the waterline on the pane meets
+	// the curved surface exactly.
+	vec3 p_glass = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	vec3 q = water_tank_pos(p_glass);
+	float live = water_live_height(q);
+
 	vec3 cam = CAMERA_POSITION_WORLD;
 	vec3 seg = p_scene - cam;
 	float seg_len = length(seg);
 	vec3 rd = seg / max(seg_len, 1e-5);
-	float path = water_view_path(cam, rd, seg_len);
+	// The box top follows the live height here, so the band where waves or the
+	// meniscus lift the water above rest is tinted too instead of left clear.
+	float path = water_view_path(cam, rd, seg_len, max(live, water_surface_height));
 	vec3 bg = textureLod(screen_tex, SCREEN_UV, 0.0).rgb;
 	vec3 through = water_view_tint_apply(bg, path);
 
@@ -35,11 +44,11 @@ void fragment() {
 	// behind the glass is the water SURFACE (a transparent pass that screen_tex
 	// doesn't contain). Act as plain clear glass there so the surface shader
 	// shows through, instead of painting the underwater tint over it.
-	// Use the live wave height at this glass point (same displacement as the
-	// surface shader) so the waterline on the pane follows the ripples exactly.
-	vec3 p_glass = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	vec3 q = water_tank_pos(p_glass);
-	float above = q.y - water_live_height(q);
+	// Tested where the ray reaches the inner wall, not at this face: looking down
+	// at an angle, a ray can cross the outer face above the waterline and still
+	// drop below it inside the pane, entering through the wall (no surface hit).
+	vec3 w = water_wall_entry(cam, rd);
+	float above = w.y - water_live_height(w);
 	float aa = max(fwidth(above), 1e-4);
 	float via_top = smoothstep(-aa, aa, above);
 
