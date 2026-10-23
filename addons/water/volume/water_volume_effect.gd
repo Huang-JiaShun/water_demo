@@ -165,8 +165,8 @@ func set_frame_data(world_to_tank: Transform3D, tank_size: Vector3, surface_heig
 	_frame = {
 		world_to_tank = world_to_tank,
 		tank_max = Vector3(tank_size.x * 0.5, surface_height, tank_size.z * 0.5),
-		sigma_a = optics.absorption,
-		sigma_s = optics.scattering,
+		sigma_a = optics.get_absorption(),
+		sigma_s = optics.get_scattering(),
 		g = optics.phase_g,
 		ior = optics.ior,
 		ambient = ambient,

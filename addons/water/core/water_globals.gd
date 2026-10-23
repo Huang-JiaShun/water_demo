@@ -70,13 +70,13 @@ static func publish(body: WaterBody) -> void:
 	RenderingServer.global_shader_parameter_set(MENISCUS, Vector2(body.meniscus_width, body.meniscus_height))
 	var o := body.optics
 	if o:
-		RenderingServer.global_shader_parameter_set(SIGMA_A, o.absorption)
-		RenderingServer.global_shader_parameter_set(SIGMA_S, o.scattering)
+		RenderingServer.global_shader_parameter_set(SIGMA_A, o.get_absorption())
+		RenderingServer.global_shader_parameter_set(SIGMA_S, o.get_scattering())
 		RenderingServer.global_shader_parameter_set(PHASE_G, o.phase_g)
 		RenderingServer.global_shader_parameter_set(IOR, o.ior)
-		var c := o.view_color
-		RenderingServer.global_shader_parameter_set(VIEW_TINT, Vector4(c.r, c.g, c.b, o.view_density))
-		RenderingServer.global_shader_parameter_set(VIEW_EXTINCTION, o.view_extinction)
+		var c := o.get_view_color()
+		RenderingServer.global_shader_parameter_set(VIEW_TINT, Vector4(c.r, c.g, c.b, o.get_view_density()))
+		RenderingServer.global_shader_parameter_set(VIEW_EXTINCTION, o.get_view_extinction())
 		RenderingServer.global_shader_parameter_set(VIEW_MAX_PATH, o.view_max_path)
 	publish_transform(body)
 
