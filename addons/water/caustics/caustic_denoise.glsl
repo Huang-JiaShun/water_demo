@@ -5,6 +5,8 @@
 //           `channels` = 1: one band, replicated to rgb. 3: bands r, g, b stacked
 //           vertically in the photon image.
 //   mode 1: one à-trous iteration (B3-spline 5x5, holes of `step` texels) src -> dst
+//   mode 2: 2x2 box downsample src (mip i) -> dst (mip i + 1); `size` = dst size.
+//           Builds the mip chain the shading samples for scattering blur.
 // Gain is irradiance relative to a flat surface: 1 = calm water.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -43,6 +45,17 @@ void main() {
 			imageStore(photons, pc0, uvec4(0u));
 		}
 		imageStore(dst, c, vec4(g, 1.0));
+		return;
+	}
+	if (p.mode == 2) {
+		ivec2 src_max = imageSize(src) - 1;
+		vec3 m = vec3(0.0);
+		for (int j = 0; j < 2; j++) {
+			for (int i = 0; i < 2; i++) {
+				m += imageLoad(src, min(c * 2 + ivec2(i, j), src_max)).rgb;
+			}
+		}
+		imageStore(dst, c, vec4(m * 0.25, 1.0));
 		return;
 	}
 	const float k[3] = float[3](0.375, 0.25, 0.0625);

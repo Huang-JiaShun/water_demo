@@ -8,9 +8,11 @@ extends RefCounted
 ##   light_depth_texture (R32F): distance along the flat-surface refracted key
 ##     light ray from the surface to the first solid (decor, floor or wall).
 ##     Baked on the main thread by LightDepthBaker, re-baked when the light moves.
-##   caustic_texture (RGBA32F): per-channel irradiance gain relative to calm
-##     water (1 = flat). Mono mode writes the same gain to r, g and b; true-RGB
-##     mode traces each channel with its own IOR (quality.caustic_rgb).
+##   caustic_texture (RGBA32F, mipmapped): per-channel irradiance gain relative
+##     to calm water (1 = flat). Mono mode writes the same gain to r, g and b;
+##     true-RGB mode traces each channel with its own IOR (quality.caustic_rgb).
+##     The mips are box-filtered every frame; shading picks a level from the
+##     forward-scattering spread of the light path (underwater.gdshaderinc).
 ##
 ## Light: one key light, either a directional sun (all rays share one refracted
 ## direction Lw) or a local tank light (rays diverge from its position).
@@ -20,7 +22,7 @@ extends RefCounted
 ##   local:       exact Snell inverse from light_pos to q (Newton, 3 iterations)
 ## It is lit iff dist <= light_depth(entry), and its caustic gain is caustic(entry).
 ##
-## Per frame (render thread): photon splat -> resolve -> à-trous x N.
+## Per frame (render thread): photon splat -> resolve -> à-trous x N -> mips.
 
 signal textures_ready
 
@@ -29,6 +31,8 @@ const DENOISE_SHADER := "res://addons/water/caustics/caustic_denoise.glsl"
 const LOCAL_SIZE := 8
 ## Fixed-point energy of one flat-surface texel. Headroom: ~2^32 / 4096 = 1M x gain.
 const FIXED_POINT := 4096.0
+## Mip levels of the caustic gain (level 5 = 32-texel blur).
+const MAX_MIPS := 6
 
 var caustic_texture := Texture2DRD.new()
 var light_depth_texture := Texture2DRD.new()
@@ -59,6 +63,8 @@ var _sampler := RID()
 var _photons := RID()
 var _depth := RID()
 var _gain: Array[RID] = [RID(), RID()]
+# Single-mip views of _gain[0], for image (storage) bindings.
+var _mips: Array[RID] = []
 
 
 func configure(p_size: Vector2i, quality: WaterQuality) -> void:
@@ -191,9 +197,17 @@ func _rt_init(p_size: Vector2i, channels: int, generation: int) -> void:
 
 	var f32 := RD.TEXTURE_USAGE_STORAGE_BIT | RD.TEXTURE_USAGE_SAMPLING_BIT \
 			| RD.TEXTURE_USAGE_CAN_COPY_TO_BIT | RD.TEXTURE_USAGE_CAN_COPY_FROM_BIT
+	var levels := mini(MAX_MIPS, floori(log(maxf(p_size.x, p_size.y)) / log(2.0)) + 1)
 	for i in 2:
-		_gain[i] = _rd.texture_create(WaterRD.texture_format(p_size, RD.DATA_FORMAT_R32G32B32A32_SFLOAT, f32), RDTextureView.new())
-		_rd.texture_clear(_gain[i], Color(1, 1, 1, 1), 0, 1, 0, 1)
+		var tf := WaterRD.texture_format(p_size, RD.DATA_FORMAT_R32G32B32A32_SFLOAT, f32)
+		if i == 0:
+			tf.mipmaps = levels
+		_gain[i] = _rd.texture_create(tf, RDTextureView.new())
+		_rd.texture_clear(_gain[i], Color(1, 1, 1, 1), 0, tf.mipmaps, 0, 1)
+	_mips.clear()
+	for m in levels:
+		_mips.append(_rd.texture_create_shared_from_slice(RDTextureView.new(), _gain[0], 0, m, 1,
+				RD.TEXTURE_SLICE_2D))
 	var far := PackedFloat32Array()
 	far.resize(p_size.x * p_size.y)
 	far.fill(1e3) # nothing blocks the light until the first bake
@@ -212,7 +226,7 @@ func _rt_update(wave_rid: RID, pc: PackedByteArray) -> void:
 	if _rd == null or not _splat_pipeline.is_valid() or not _gain[0].is_valid():
 		return
 	if pc.is_empty() or not wave_rid.is_valid() or not _rd.texture_is_valid(wave_rid):
-		_rd.texture_clear(_gain[0], Color(1, 1, 1, 1), 0, 1, 0, 1)
+		_rd.texture_clear(_gain[0], Color(1, 1, 1, 1), 0, _mips.size(), 0, 1)
 		return
 
 	var splat_set := UniformSetCacheRD.get_cache(_splat_shader, 0, [
@@ -225,11 +239,12 @@ func _rt_update(wave_rid: RID, pc: PackedByteArray) -> void:
 	var n := _denoise_iterations
 	var first := n % 2
 	var sets: Array[RID] = []
+	var img: Array[RID] = [_mips[0], _gain[1]]
 	for i in 2:
 		sets.append(UniformSetCacheRD.get_cache(_denoise_shader, 0, [
 			WaterRD.image_uniform(0, _photons),
-			WaterRD.image_uniform(1, _gain[i]),
-			WaterRD.image_uniform(2, _gain[1 - i]),
+			WaterRD.image_uniform(1, img[i]),
+			WaterRD.image_uniform(2, img[1 - i]),
 		]))
 	var resolve_set: RID = sets[1 - first] # writes _gain[first]
 
@@ -260,6 +275,20 @@ func _rt_update(wave_rid: RID, pc: PackedByteArray) -> void:
 		_rd.compute_list_set_push_constant(cl, dpc, dpc.size())
 		_rd.compute_list_dispatch(cl, gx, gy, 1)
 		cur = 1 - cur
+	# Mip chain of the published gain.
+	var ms := size
+	for m in range(1, _mips.size()):
+		ms = Vector2i(maxi(1, ms.x >> 1), maxi(1, ms.y >> 1))
+		_rd.compute_list_add_barrier(cl)
+		var mset := UniformSetCacheRD.get_cache(_denoise_shader, 0, [
+			WaterRD.image_uniform(0, _photons),
+			WaterRD.image_uniform(1, _mips[m - 1]),
+			WaterRD.image_uniform(2, _mips[m]),
+		])
+		dpc = WaterRD.push_constant(PackedInt32Array([ms.x, ms.y, 2, 0]), PackedFloat32Array([0.0, 0.0, 0.0, 0.0]))
+		_rd.compute_list_bind_uniform_set(cl, mset, 0)
+		_rd.compute_list_set_push_constant(cl, dpc, dpc.size())
+		_rd.compute_list_dispatch(cl, WaterRD.group_count(ms.x, LOCAL_SIZE), WaterRD.group_count(ms.y, LOCAL_SIZE), 1)
 	_rd.compute_list_end()
 
 
@@ -275,7 +304,12 @@ func _sampler_uniform(binding: int, texture: RID) -> RDUniform:
 func _rt_free() -> void:
 	if _rd == null:
 		return
-	WaterRD.free_rids(_rd, [_photons, _depth, _gain[0], _gain[1], _sampler, _splat_shader, _denoise_shader])
+	# Shared mip views before the texture they view.
+	var rids: Array[RID] = []
+	rids.append_array(_mips)
+	rids.append_array([_photons, _depth, _gain[0], _gain[1], _sampler, _splat_shader, _denoise_shader])
+	WaterRD.free_rids(_rd, rids)
+	_mips.clear()
 	_photons = RID()
 	_depth = RID()
 	_gain = [RID(), RID()]

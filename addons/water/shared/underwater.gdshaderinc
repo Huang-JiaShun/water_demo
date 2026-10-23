@@ -8,7 +8,7 @@
 // The caustic texture stores the gain (1 = calm water) at that entry point, and
 // the light-depth texture stores how far the ray travels before hitting a solid.
 
-global uniform sampler2D water_caustic_tex;
+global uniform sampler2D water_caustic_tex : filter_linear_mipmap;
 global uniform sampler2D water_light_depth_tex;
 global uniform vec4 water_caustic_params; // x = strength, y = dispersion, z = 1: texture is true RGB, w = diffuse fill
 // sun: xyz = tank-space refracted direction toward it (in water), w = 0.
@@ -74,14 +74,47 @@ bool water_key_light(vec3 world_pos, vec3 light_dir_world, bool directional) {
 	return dot(l, to_l) > (directional ? 0.995 : 0.9);
 }
 
-vec3 water_caustic_tap(vec2 uv, vec2 shift) {
+vec3 water_caustic_tap(vec2 uv, vec2 shift, float lod) {
 	if (water_caustic_params.z > 0.5) {
 		// True RGB: every channel was traced with its own IOR.
-		return textureLod(water_caustic_tex, uv, 0.0).rgb;
+		return textureLod(water_caustic_tex, uv, lod).rgb;
 	}
-	return vec3(textureLod(water_caustic_tex, uv - shift, 0.0).r,
-			textureLod(water_caustic_tex, uv, 0.0).g,
-			textureLod(water_caustic_tex, uv + shift, 0.0).b);
+	return vec3(textureLod(water_caustic_tex, uv - shift, lod).r,
+			textureLod(water_caustic_tex, uv, lod).g,
+			textureLod(water_caustic_tex, uv + shift, lod).b);
+}
+
+// Caustic mip level for the forward-scattering blur of a light path of length
+// dist (m). Small-angle multiple scattering: each metre deflects the ray by an
+// angular variance sigma_s * <theta^2>, <theta^2> ~ 2 (1 - g) for HG, so the
+// lateral spread after L is sqrt(sigma_s * 2 (1 - g) * L^3 / 3). Denser water
+// and deeper points blur more; the level is that spread in caustic texels.
+float water_caustic_lod(float dist) {
+	float ss = dot(water_sigma_s, vec3(0.2126, 0.7152, 0.0722));
+	float spread = sqrt(max(ss * 2.0 * (1.0 - water_phase_g) * dist * dist * dist / 3.0, 0.0));
+	float texel = water_tank_size.x / float(textureSize(water_caustic_tex, 0).x);
+	return clamp(log2(max(spread / texel, 1.0)), 0.0, float(textureQueryLevels(water_caustic_tex) - 1));
+}
+
+// Mono-mode dispersion from the surface normal at the entry point: refract the
+// incoming light with the red and green IORs through the simulated wave normal
+// and return how far apart (tank uv) the two rays land at `depth`. Red is
+// sampled at uv - shift and blue at uv + shift (symmetric IOR spread), so the
+// split follows the local wave tilt like the true-RGB trace, at one channel's cost.
+vec2 water_dispersion_shift(vec2 entry_xz, vec2 uv, float depth) {
+	vec3 Ls;
+	if (water_light.w > 0.5) {
+		Ls = normalize(water_light.xyz - vec3(entry_xz.x, water_surface_height, entry_xz.y));
+	} else {
+		vec2 a = water_light.xz * water_ior; // back to the air-side direction
+		Ls = vec3(a.x, sqrt(max(1.0 - dot(a, a), 0.0)), a.y);
+	}
+	vec3 n = water_wave_normal(water_sample_wave(uv).yz * water_height_scale);
+	vec3 dg = refract(-Ls, n, 1.0 / water_ior);
+	vec3 dr = refract(-Ls, n, 1.0 / (water_ior - 0.5 * water_caustic_params.y));
+	if (dg.y > -1e-3 || dr.y > -1e-3) return vec2(0.0);
+	vec2 off = (dr.xz / -dr.y - dg.xz / -dg.y) * depth;
+	return off / water_tank_size.xz;
 }
 
 // Soft visibility of the key light through the light-depth map at uv (1 lit,
@@ -111,10 +144,9 @@ vec3 water_caustics(vec3 world_pos) {
 
 	vec2 shift = vec2(0.0);
 	if (water_caustic_params.z < 0.5) {
-		// Fake dispersion: red refracts slightly less and blue slightly more, which
-		// shifts their entry points along the horizontal light direction with depth.
-		shift = normalize(Lw.xz + vec2(1e-5)) * dist * water_caustic_params.y / water_tank_size.xz;
+		shift = water_dispersion_shift(ent.xy, uv, depth);
 	}
+	float lod = water_caustic_lod(dist);
 	vec4 shape = water_light_shape;
 	vec3 g = vec3(0.0);
 	float vis = 0.0;
@@ -134,7 +166,7 @@ vec3 water_caustics(vec3 world_pos) {
 		for (int j = 0; j < n; j++) {
 			float x = n > 1 ? (float(j) / float(n - 1) * 2.0 - 1.0) * shape.x : 0.0;
 			vec2 o = axis * x * m / water_tank_size.xz;
-			g += water_caustic_tap(uv + o + w_uv, shift) + water_caustic_tap(uv + o - w_uv, shift);
+			g += water_caustic_tap(uv + o + w_uv, shift, lod) + water_caustic_tap(uv + o - w_uv, shift, lod);
 			vis += water_light_vis(uv + o + w_uv, dist, 0.0) + water_light_vis(uv + o - w_uv, dist, 0.0);
 		}
 		g /= float(2 * n);
@@ -149,7 +181,7 @@ vec3 water_caustics(vec3 world_pos) {
 				vec2(-1.0, 0.0), vec2(-0.7071, -0.7071), vec2(0.0, -1.0), vec2(0.7071, -0.7071));
 		for (int j = -1; j < 8; j++) {
 			vec2 o = j < 0 ? vec2(0.0) : TAPS[j] * 0.7 * r_uv;
-			g += water_caustic_tap(uv + o, shift);
+			g += water_caustic_tap(uv + o, shift, lod);
 			vis += water_light_vis(uv + o, dist, shape.x);
 		}
 		g /= 9.0;

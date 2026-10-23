@@ -9,6 +9,7 @@ global uniform vec3 water_sigma_a;
 global uniform vec3 water_sigma_s;
 global uniform float water_phase_g;
 global uniform float water_ior;
+global uniform float water_height_scale;
 
 vec3 water_tank_pos(vec3 world_pos) {
 	return (water_world_to_tank * vec4(world_pos, 1.0)).xyz;

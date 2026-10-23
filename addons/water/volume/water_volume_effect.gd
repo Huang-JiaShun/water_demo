@@ -8,8 +8,10 @@ extends CompositorEffect
 ##      engine's motion vectors (opaque hits) or through tank space (background),
 ##      reject on depth mismatch, neighbourhood clamp, blend
 ##   3. volume_denoise.glsl (optional): depth-aware à-trous at low resolution
-##   4. volume_composite.glsl at full resolution: depth-guided bilateral
-##      upsample, color = scene * T + inscatter
+##   4. volume_composite.glsl at full resolution: turn the low-res result into
+##      medium coefficients (extinction, scattering source), joint bilateral
+##      upsample them guided by full-res depth, re-integrate over each pixel's
+##      own water path, color = scene * T + inscatter
 ## Because this runs before transparents, the water surface refracts an
 ## already-fogged underwater image (§3), so the surface owns no absorption.
 ##
@@ -33,6 +35,7 @@ const TEX_TMP_TRANS := &"tmp_trans"
 const MAX_LIGHTS := 4
 const UBO_SIZE := 2 * 64 + 5 * 16 + 3 * MAX_LIGHTS * 16 + 16
 const TEMPORAL_UBO_SIZE := 4 * 64 + 16 + 16
+const COMPOSITE_UBO_SIZE := 2 * 64 + 16
 
 ## Multiplier on in-scattered light (1 = physical).
 @export var scatter_strength := 1.0
@@ -70,6 +73,7 @@ var _sampler := RID()
 var _linear_sampler := RID()
 var _ubo := RID()
 var _temporal_ubo := RID()
+var _composite_ubo := RID()
 var _fallback := RID()     # 1x1 R32F = 1 (caustic gain of calm water)
 var _fallback_far := RID() # 1x1 R32F = 1e3 (nothing blocks the light)
 var _fallback_zero := RID() # 1x1 RG16F = 0 (no motion vectors)
@@ -103,7 +107,7 @@ func _notification(what: int) -> void:
 	if what != NOTIFICATION_PREDELETE or _rd == null:
 		return
 	# `self` is being destroyed, so any deferred work must not reference it.
-	var rids: Array[RID] = [_ubo, _temporal_ubo, _fallback, _fallback_far, _fallback_zero, _sampler, _linear_sampler,
+	var rids: Array[RID] = [_ubo, _temporal_ubo, _composite_ubo, _fallback, _fallback_far, _fallback_zero, _sampler, _linear_sampler,
 			_march_shader, _composite_shader, _temporal_shader, _denoise_shader]
 	if _on_render_thread():
 		WaterRD.free_rids(_rd, rids)
@@ -217,6 +221,7 @@ func _rt_init() -> void:
 	_fallback_far = _rd.texture_create(tf, RDTextureView.new(), [PackedFloat32Array([1e3]).to_byte_array()])
 	_ubo = _rd.uniform_buffer_create(UBO_SIZE)
 	_temporal_ubo = _rd.uniform_buffer_create(TEMPORAL_UBO_SIZE)
+	_composite_ubo = _rd.uniform_buffer_create(COMPOSITE_UBO_SIZE)
 
 
 func _ensure_pair(buffers: RenderSceneBuffersRD, ins_name: StringName, trans_name: StringName, low: Vector2i) -> bool:
@@ -313,6 +318,17 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 		var proj_c := proj if proj.y.y < 0.0 else Projection.create_depth_correction(true) * proj
 		var inv_proj := proj_c.inverse()
 		_rd.buffer_update(_ubo, 0, UBO_SIZE, _pack_ubo(f, inv_proj, Projection(view_to_tank), low, full, god_rays))
+		if not (_composite_ubo is RID and _composite_ubo.is_valid()):
+			# Lazy as well: an effect created by an older script version never ran this in _rt_init.
+			_composite_ubo = _rd.uniform_buffer_create(COMPOSITE_UBO_SIZE)
+		var tm: Vector3 = f.tank_max
+		var geo := PackedFloat32Array()
+		for m: Projection in [inv_proj, Projection(view_to_tank)]:
+			for c in 4:
+				var col: Vector4 = m[c]
+				geo.append_array([col.x, col.y, col.z, col.w])
+		geo.append_array([tm.x, tm.y, tm.z, 0.0])
+		_rd.buffer_update(_composite_ubo, 0, COMPOSITE_UBO_SIZE, geo.to_byte_array())
 		if temporal:
 			# Buffer updates are not allowed inside a compute list.
 			_rd.buffer_update(_temporal_ubo, 0, TEMPORAL_UBO_SIZE, _pack_temporal_ubo(
@@ -386,6 +402,7 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 			_sampler_uniform(1, depth),
 			WaterRD.image_uniform(2, res[0]),
 			WaterRD.image_uniform(3, res[1]),
+			_ubo_uniform(4, _composite_ubo),
 		])
 		# Only the depth rows of inv_proj are needed for linearising depth.
 		var pc := WaterRD.push_constant(PackedInt32Array([full.x, full.y, low.x, low.y]),

@@ -3,7 +3,6 @@
 // Every parameter comes from WaterGlobals, so glass and surface always agree.
 #include "res://addons/water/shared/water_common.gdshaderinc"
 
-global uniform float water_height_scale;
 global uniform vec4 water_view_tint;     // rgb = colour, a = density multiplier
 global uniform vec3 water_view_extinction; // 1/m, independent of the physical sigma
 global uniform float water_view_max_path;
