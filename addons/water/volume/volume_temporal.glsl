@@ -2,15 +2,14 @@
 #version 450
 // Volume temporal reprojection (docs/water_architecture.md §6.3), low resolution.
 //
-// The march jitters its step positions per frame. Here each pixel's
-// representative point (the opaque hit, or the middle of the water segment for
-// background pixels) is rebuilt, moved into tank space and projected with the
-// previous frame's camera. History is sampled there, rejected on a depth
-// mismatch, clamped to the current 3x3 neighbourhood and blended.
+// The march jitters its step positions per frame. Each pixel is reprojected to
+// the previous frame, its history is rejected on a depth mismatch, clamped to
+// the current 3x3 neighbourhood and blended.
 //
-// Reprojection goes through tank space, so a moving tank or camera both
-// reproject correctly. Dynamic objects (fish) are handled by depth rejection
-// rather than motion vectors: the fog in front of a fish changes slowly.
+// Pixels with an opaque hit reproject with the engine's motion vectors, so
+// moving objects (fish) carry their history. Background pixels have no motion
+// vector (the representative point is the middle of the water segment), so
+// they go through tank space with the previous camera instead.
 //
 // Inputs:  march output (inscatter.rgb, lin depth) / (T.rgb, view distance of rep point)
 //          previous history (same layout)
@@ -25,12 +24,15 @@ layout(set = 0, binding = 3) uniform sampler2D trans_hist;
 layout(rgba16f, set = 0, binding = 4) uniform restrict writeonly image2D ins_out;
 layout(rgba16f, set = 0, binding = 5) uniform restrict writeonly image2D trans_out;
 
+// Godot velocity buffer, full res, in UV units: prev_uv = uv - velocity.
+layout(set = 0, binding = 7) uniform sampler2D velocity_tex;
+
 layout(set = 0, binding = 6, std140) uniform Params {
 	mat4 inv_proj;          // current NDC -> view
 	mat4 view_to_tank;      // current view -> tank
 	mat4 prev_tank_to_view; // previous frame tank -> view
 	mat4 prev_proj;         // previous frame view -> clip (Vulkan corrected)
-	ivec4 sizes;            // xy = low-res size, z = 1: reset history
+	ivec4 sizes;            // xy = low-res size, z = 1: reset history, w = 1: velocity_tex is valid
 	vec4 params;            // x = min blend (static), y = max blend (fast motion), z = depth tolerance
 } u;
 
@@ -56,19 +58,33 @@ void main() {
 	vec3 dir_view = normalize(far_v.xyz / far_v.w);
 	vec4 p_tank = u.view_to_tank * vec4(dir_view * dist, 1.0);
 	vec4 p_prev = u.prev_tank_to_view * p_tank;
-	vec4 clip = u.prev_proj * p_prev;
-	vec2 puv = clip.xy / clip.w * 0.5 + 0.5;
-	bool valid = clip.w > 0.0 && all(greaterThanEqual(puv, vec2(0.0))) && all(lessThanEqual(puv, vec2(1.0)));
+	vec2 puv;
+	bool valid;
+	bool opaque = ci.a <= SKY;
+	if (opaque && u.sizes.w != 0) {
+		// Same full-res texel the march took its depth from.
+		ivec2 full_size = textureSize(velocity_tex, 0);
+		ivec2 full_px = min(ivec2(uv * vec2(full_size)), full_size - 1);
+		puv = uv - texelFetch(velocity_tex, full_px, 0).xy;
+		valid = true;
+	} else {
+		vec4 clip = u.prev_proj * p_prev;
+		puv = clip.xy / clip.w * 0.5 + 0.5;
+		valid = clip.w > 0.0;
+	}
+	valid = valid && all(greaterThanEqual(puv, vec2(0.0))) && all(lessThanEqual(puv, vec2(1.0)));
 
 	vec4 hi = vec4(0.0);
 	vec4 ht = vec4(1.0);
 	if (valid) {
 		hi = textureLod(ins_hist, puv, 0.0);
 		ht = textureLod(trans_hist, puv, 0.0);
-		if (ci.a > SKY) {
+		if (!opaque) {
 			valid = hi.a > SKY;
 		} else {
-			float expect = -p_prev.z;
+			// With motion vectors the point's previous depth is unknown; the
+			// current depth is close enough at frame-to-frame motion.
+			float expect = u.sizes.w != 0 ? ci.a : -p_prev.z;
 			valid = abs(hi.a - expect) < u.params.z * max(expect, 1e-3);
 		}
 		valid = valid && ht.a > 0.0; // history had water here

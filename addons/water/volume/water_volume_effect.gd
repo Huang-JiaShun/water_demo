@@ -4,8 +4,9 @@ extends CompositorEffect
 ## Water volume pass (docs/water_architecture.md §6.3). POST_OPAQUE:
 ##   1. volume_march.glsl at 1/downsample resolution: tank-AABB-clipped
 ##      single-scatter march -> (inscatter, transmittance)
-##   2. volume_temporal.glsl (optional): reproject the previous result through
-##      tank space, reject on depth mismatch, neighbourhood clamp, blend
+##   2. volume_temporal.glsl (optional): reproject the previous result with the
+##      engine's motion vectors (opaque hits) or through tank space (background),
+##      reject on depth mismatch, neighbourhood clamp, blend
 ##   3. volume_denoise.glsl (optional): depth-aware à-trous at low resolution
 ##   4. volume_composite.glsl at full resolution: depth-guided bilateral
 ##      upsample, color = scene * T + inscatter
@@ -71,9 +72,12 @@ var _ubo := RID()
 var _temporal_ubo := RID()
 var _fallback := RID()     # 1x1 R32F = 1 (caustic gain of calm water)
 var _fallback_far := RID() # 1x1 R32F = 1e3 (nothing blocks the light)
+var _fallback_zero := RID() # 1x1 RG16F = 0 (no motion vectors)
 
 # Render-thread temporal state.
 var _frame_index := 0
+# Whether the last temporal pass reprojected with motion vectors (read by tests).
+var _used_motion_vectors := false
 # Temporal state per viewport (keyed by RenderSceneBuffersRD instance id): the
 # history textures live on each viewport's buffers, so the ping-pong index and
 # previous-frame matrices must too, or two viewports sharing this effect would
@@ -90,6 +94,7 @@ var _hist_states := {}
 
 func _init() -> void:
 	effect_callback_type = EFFECT_CALLBACK_TYPE_POST_OPAQUE
+	needs_motion_vectors = true
 	# Weak ref: the effect may be freed before the queued init runs.
 	RenderingServer.call_on_render_thread(_rt_init_weak.bind(weakref(self)))
 
@@ -98,7 +103,7 @@ func _notification(what: int) -> void:
 	if what != NOTIFICATION_PREDELETE or _rd == null:
 		return
 	# `self` is being destroyed, so any deferred work must not reference it.
-	var rids: Array[RID] = [_ubo, _temporal_ubo, _fallback, _fallback_far, _sampler, _linear_sampler,
+	var rids: Array[RID] = [_ubo, _temporal_ubo, _fallback, _fallback_far, _fallback_zero, _sampler, _linear_sampler,
 			_march_shader, _composite_shader, _temporal_shader, _denoise_shader]
 	if _on_render_thread():
 		WaterRD.free_rids(_rd, rids)
@@ -264,6 +269,17 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 	var inscatter := buffers.get_texture(CONTEXT, TEX_INSCATTER)
 	var trans := buffers.get_texture(CONTEXT, TEX_TRANS)
 
+	# Motion vectors exist when the renderer produced them (Forward+); else the
+	# temporal pass reprojects everything through tank space.
+	var velocity := buffers.get_velocity_texture() if temporal else RID()
+	var has_mv := velocity.is_valid() and _rd.texture_is_valid(velocity)
+	_used_motion_vectors = has_mv
+	if not has_mv and not (_fallback_zero is RID and _fallback_zero.is_valid()):
+		# Lazy as well: an effect created by an older script version never ran this in _rt_init.
+		var zf := WaterRD.texture_format(Vector2i.ONE, RenderingDevice.DATA_FORMAT_R32G32_SFLOAT,
+				RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT)
+		_fallback_zero = _rd.texture_create(zf, RDTextureView.new(), [PackedFloat32Array([0.0, 0.0]).to_byte_array()])
+
 	var cam_to_world := scene_data.get_cam_transform()
 	var view_to_tank: Transform3D = f.world_to_tank * cam_to_world
 
@@ -300,7 +316,7 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 		if temporal:
 			# Buffer updates are not allowed inside a compute list.
 			_rd.buffer_update(_temporal_ubo, 0, TEMPORAL_UBO_SIZE, _pack_temporal_ubo(
-					inv_proj, Projection(view_to_tank), hs.prev_tank_to_view, hs.prev_proj, low, reset))
+					inv_proj, Projection(view_to_tank), hs.prev_tank_to_view, hs.prev_proj, low, reset, has_mv))
 
 		var march_set := UniformSetCacheRD.get_cache(_march_shader, 0, [
 			_sampler_uniform(0, depth),
@@ -333,6 +349,7 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 				WaterRD.image_uniform(4, res[0]),
 				WaterRD.image_uniform(5, res[1]),
 				_ubo_uniform(6, _temporal_ubo),
+				_sampler_uniform(7, velocity if has_mv else _fallback_zero),
 			])
 			_rd.compute_list_add_barrier(cl)
 			_rd.compute_list_bind_compute_pipeline(cl, _temporal_pipeline)
@@ -410,14 +427,14 @@ func _pack_ubo(f: Dictionary, inv_proj: Projection, view_to_tank: Projection, lo
 
 
 func _pack_temporal_ubo(inv_proj: Projection, view_to_tank: Projection, prev_tank_to_view: Projection,
-		prev_proj: Projection, low: Vector2i, reset: bool) -> PackedByteArray:
+		prev_proj: Projection, low: Vector2i, reset: bool, has_mv: bool) -> PackedByteArray:
 	var fl := PackedFloat32Array()
 	for m: Projection in [inv_proj, view_to_tank, prev_tank_to_view, prev_proj]:
 		for c in 4:
 			var col: Vector4 = m[c]
 			fl.append_array([col.x, col.y, col.z, col.w])
 	var bytes := fl.to_byte_array()
-	bytes.append_array(PackedInt32Array([low.x, low.y, 1 if reset else 0, 0]).to_byte_array())
+	bytes.append_array(PackedInt32Array([low.x, low.y, 1 if reset else 0, 1 if has_mv else 0]).to_byte_array())
 	bytes.append_array(PackedFloat32Array([temporal_blend, maxf(temporal_blend_moving, temporal_blend),
 			0.05, 0.0]).to_byte_array())
 	return bytes

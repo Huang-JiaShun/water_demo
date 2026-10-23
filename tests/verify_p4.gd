@@ -3,13 +3,15 @@ extends SceneTree
 ##   - all volume passes compiled (temporal + à-trous)
 ##   - tier switching rebuilds the subsystems at the new resolutions
 ##   - HIGH tier: true-RGB caustics, channels differ under waves, green mean ~1
-##   - rendered frame: temporal pass stable (no NaN / black frame)
+##   - temporal pass reprojects with motion vectors
+##   - rendered frame with a moving camera: temporal pass stable (no NaN / black frame)
 ## Run: godot --path . --script res://tests/verify_p4.gd
 
 var body: WaterBody
 var frame := 0
 var ok := true
 var calm := PackedFloat32Array()
+var cam: Camera3D
 
 
 func _initialize() -> void:
@@ -56,6 +58,8 @@ func _process(_delta: float) -> bool:
 		_check("temporal", v._temporal_pipeline.is_valid())
 		_check("denoise", v._denoise_pipeline.is_valid())
 		_check("medium tier has temporal", body.quality.volume_temporal)
+		_check("motion vectors used", v._used_motion_vectors)
+		cam = root.get_viewport().get_camera_3d()
 		body.set_tier(WaterQuality.Tier.HIGH)
 	if frame == 30:
 		print("HIGH tier:")
@@ -74,6 +78,8 @@ func _process(_delta: float) -> bool:
 		_check("calm ~1", absf(g[1] - 1.0) < 0.1)
 		for i in 6:
 			body.disturb(body.global_transform * Vector3(-0.4 + i * 0.15, body.water_depth, 0.05 * (i % 2)), 0.02, -0.004)
+	if cam and frame > 30 and frame < 70:
+		cam.global_position.x += 0.01
 	if frame == 70:
 		var g := _gain_rgb()
 		print("  waves gain rgb = %.3f %.3f %.3f  |r-b| = %.4f" % g)
